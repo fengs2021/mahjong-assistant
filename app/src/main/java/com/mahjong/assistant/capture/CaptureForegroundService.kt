@@ -73,8 +73,11 @@ class CaptureForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        capture(resultCode, dataIntent)
-        return START_NOT_STICKY
+        // Android 15: startForeground是异步的，等系统确认前台服务状态后再创建MediaProjection
+        Handler(Looper.getMainLooper()).postDelayed({
+            capture(resultCode, dataIntent)
+        }, 350)
+        return START_STICKY
     }
 
     private fun capture(resultCode: Int, data: Intent) {
