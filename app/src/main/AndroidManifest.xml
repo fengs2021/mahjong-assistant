@@ -41,11 +41,18 @@
                 android:value="麻将游戏辅助悬浮窗" />
         </service>
 
+        <!-- 截屏前台服务 (Android15+ mediaProjection要求) -->
+        <service
+            android:name=".capture.CaptureForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
         <!-- 截屏权限 Activity -->
         <activity
             android:name=".capture.CaptureActivity"
             android:exported="false"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true" />
 
         <!-- 手动输入 Activity -->
         <activity
