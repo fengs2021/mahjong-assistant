@@ -11,93 +11,169 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * 本地模板匹配牌识别器
+ * 牌面模板匹配识别器 v2.0
  *
- * 流程:
- *   1. 校准: 从雀魂截图中截取34种牌的模板 → 保存到内部存储
- *   2. 识别: MediaProjection截图 → 找牌区域 → 模板匹配 → 返回ID+置信度
- *   3. 修正: 用户手动纠正错误识别 → 可选更新模板
+ * 模板来源优先级:
+ *   1. APK assets 预置模板 (34张雀魂标准牌面) — 开箱即用
+ *   2. 内部存储手动校准模板 — 覆盖/补充标准模板
+ *
+ * 识别流程:
+ *   截图 → Canny边缘检测找牌区域 → 模板匹配 → 返回tileId+置信度
  */
 object TileMatcher {
 
-    // 模板存储目录
-    private const val TEMPLATE_DIR = "tile_templates"
-
-    // 34种牌的模板缓存 (tileId → Mat)
-    private val templates = mutableMapOf<Int, Mat>()
-    private var templatesLoaded = false
+    private const val TAG = "TileMatcher"
+    private const val ASSET_TILES_DIR = "tiles"     // assets/tiles/
+    private const val TEMPLATE_DIR = "tile_templates" // 内部存储模板目录
 
     data class MatchResult(
-        val tileId: Int,         // 匹配到的牌ID
-        val confidence: Double,  // 置信度 0.0~1.0
-        val needsCheck: Boolean  // 是否需要人工确认
+        val tileId: Int,         // 0-33
+        val confidence: Double,  // 0.0~1.0
+        val needsCheck: Boolean  // 置信度<0.55需人工确认
     )
 
-    /**
-     * 初始化OpenCV并加载模板
-     * @return 初始化是否成功
-     */
+    data class RectRegion(val x: Int, val y: Int, val w: Int, val h: Int)
+
+    // 模板缓存
+    private val templates = mutableMapOf<Int, Mat>()
+    @Volatile private var templatesLoaded = false
+    private var initDiagnostic = "未初始化"
+
+    /** OpenCV是否加载成功 */
+    private var opencvReady = false
+
+    // ─── tileId映射: 中文文件名 → ID ───
+
+    private val nameToId = mapOf(
+        "一万" to 0,  "二万" to 1,  "三万" to 2,  "四万" to 3,  "五万" to 4,
+        "六万" to 5,  "七万" to 6,  "八万" to 7,  "九万" to 8,
+        "一筒" to 9,  "二筒" to 10, "三筒" to 11, "四筒" to 12, "五筒" to 13,
+        "六筒" to 14, "七筒" to 15, "八筒" to 16, "九筒" to 17,
+        "一索" to 18, "二索" to 19, "三索" to 20, "四索" to 21, "五索" to 22,
+        "六索" to 23, "七索" to 24, "八索" to 25, "九索" to 26,
+        "东" to 27,  "南" to 28,  "西" to 29,  "北" to 30,
+        "白" to 31,  "发" to 32,  "中" to 33
+    )
+
+    // ─── 初始化 ───
+
     fun init(context: Context): Boolean {
         return try {
-            if (!OpenCVLoader.initLocal()) {
-                android.util.Log.e("TileMatcher", "OpenCV initLocal failed")
+            // 1. 加载OpenCV
+            opencvReady = try {
+                OpenCVLoader.initLocal().also {
+                    android.util.Log.i(TAG, "OpenCV initLocal: $it")
+                }
+            } catch (e: UnsatisfiedLinkError) {
+                android.util.Log.e(TAG, "OpenCV UnsatisfiedLinkError: ${e.message}. ABI=${android.os.Build.SUPPORTED_ABIS.contentToString()}")
                 false
-            } else {
-                android.util.Log.i("TileMatcher", "OpenCV loaded OK")
-                loadTemplates(context)
-                templatesLoaded
             }
+
+            if (!opencvReady) {
+                initDiagnostic = "OpenCV加载失败 ABI=${android.os.Build.SUPPORTED_ABIS.contentToString()}"
+                return false
+            }
+
+            // 2. 加载模板
+            templatesLoaded = loadPresetTemplates(context)
+            if (!templatesLoaded) {
+                // 回退: 尝试加载手动校准的模板
+                templatesLoaded = loadCalibratedTemplates(context)
+            }
+
+            initDiagnostic = if (templatesLoaded) {
+                "就绪: ${templates.size}/34 模板 OpenCV=${opencvReady}"
+            } else {
+                "模板为空: assets未找到且无手动校准"
+            }
+            android.util.Log.i(TAG, initDiagnostic)
+            templatesLoaded
         } catch (e: Exception) {
-            android.util.Log.e("TileMatcher", "OpenCV init crash: ${e.message}", e)
+            initDiagnostic = "初始化崩溃: ${e.message}"
+            android.util.Log.e(TAG, initDiagnostic, e)
             false
         }
     }
 
-    /**
-     * 从内部存储加载所有模板
-     */
-    private fun loadTemplates(context: Context) {
-        templates.clear()
-        val dir = File(context.filesDir, TEMPLATE_DIR)
-        if (!dir.exists()) {
-            templatesLoaded = false
-            return
-        }
+    /** 诊断信息 */
+    fun getDiagnostic(): String = "$initDiagnostic | 模板数=${templates.size} | OpenCV=$opencvReady"
+    fun hasTemplates(): Boolean = templatesLoaded
+    fun templateCount(): Int = templates.size
+    fun isOpencvReady(): Boolean = opencvReady
 
+    // ─── 从assets加载预置模板 ───
+
+    private fun loadPresetTemplates(context: Context): Boolean {
+        return try {
+            val assets = context.assets
+            val tileFiles = assets.list(ASSET_TILES_DIR) ?: run {
+                android.util.Log.w(TAG, "assets/tiles/ 目录为空或不存在")
+                return false
+            }
+
+            var loaded = 0
+            for (filename in tileFiles) {
+                val nameWithoutExt = filename.removeSuffix(".png")
+                val tileId = nameToId[nameWithoutExt] ?: continue
+
+                try {
+                    val inputStream = assets.open("$ASSET_TILES_DIR/$filename")
+                    val bitmap = BitmapFactory.decodeStream(inputStream)
+                    inputStream.close()
+
+                    if (bitmap != null) {
+                        val mat = Mat()
+                        Utils.bitmapToMat(bitmap, mat)
+                        Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2BGR)
+                        templates[tileId] = mat
+                        bitmap.recycle()
+                        loaded++
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w(TAG, "加载模板失败: $filename — ${e.message}")
+                }
+            }
+
+            android.util.Log.i(TAG, "从assets加载 $loaded/34 模板")
+            loaded > 0
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "assets加载异常: ${e.message}", e)
+            false
+        }
+    }
+
+    // ─── 从内部存储加载手动校准模板 ───
+
+    private fun loadCalibratedTemplates(context: Context): Boolean {
+        val dir = File(context.filesDir, TEMPLATE_DIR)
+        if (!dir.exists()) return false
+
+        var loaded = 0
         for (tileId in 0..33) {
             val file = File(dir, "tile_${tileId}.png")
-            if (file.exists()) {
+            if (!file.exists()) continue
+            try {
                 val bitmap = BitmapFactory.decodeFile(file.absolutePath)
                 if (bitmap != null) {
                     val mat = Mat()
                     Utils.bitmapToMat(bitmap, mat)
                     Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2BGR)
+                    // 手动模板覆盖预置模板
+                    templates[tileId]?.release()
                     templates[tileId] = mat
                     bitmap.recycle()
+                    loaded++
                 }
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "加载校准模板失败 tile_${tileId}")
             }
         }
-        templatesLoaded = templates.isNotEmpty()
+        android.util.Log.i(TAG, "从内部存储加载 $loaded 校准模板")
+        return templates.isNotEmpty()
     }
 
-    /**
-     * 是否有模板可用
-     */
-    fun hasTemplates(): Boolean = templatesLoaded
+    // ─── 手动校准 (保留接口兼容) ───
 
-    /**
-     * 获取已校准的模板数量
-     */
-    fun templateCount(): Int = templates.size
-
-    // ─── 校准: 保存模板 ───
-
-    /**
-     * 从截图中截取单张牌的模板
-     * @param screenshot 雀魂截图
-     * @param tileX, tileY, tileW, tileH 牌在截图中的位置
-     * @param tileId 对应的牌ID (0-33)
-     */
     fun saveTemplate(
         context: Context,
         screenshot: Bitmap,
@@ -107,7 +183,6 @@ object TileMatcher {
         val dir = File(context.filesDir, TEMPLATE_DIR)
         if (!dir.exists()) dir.mkdirs()
 
-        // 裁切并标准化大小
         val tile = Bitmap.createBitmap(screenshot, tileX, tileY, tileW, tileH)
         val normalized = Bitmap.createScaledBitmap(tile, 80, 112, true)
         tile.recycle()
@@ -118,16 +193,18 @@ object TileMatcher {
         }
         normalized.recycle()
 
-        // 重新加载模板
-        loadTemplates(context)
+        // 重新加载
+        templates[tileId]?.release()
+        val mat = Mat()
+        val reloaded = BitmapFactory.decodeFile(file.absolutePath)
+        Utils.bitmapToMat(reloaded, mat)
+        Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2BGR)
+        templates[tileId] = mat
+        reloaded.recycle()
+        templatesLoaded = true
         return true
     }
 
-    /**
-     * 批量校准 — 从完整手牌截图+已知手牌中提取模板
-     * @param screenshot 含有清晰手牌的截图
-     * @param handTiles 已知的手牌序列 (按牌面从左到右)
-     */
     fun calibrateFromHand(
         context: Context,
         screenshot: Bitmap,
@@ -150,15 +227,11 @@ object TileMatcher {
 
     // ─── 识别: 模板匹配 ───
 
-    /**
-     * 从截图中识别手牌
-     * @return Pair<识别结果列表, 总体置信度>
-     */
     fun recognize(screenshot: Bitmap): Pair<List<MatchResult>, Double> {
-        if (!templatesLoaded) return Pair(emptyList(), 0.0)
+        if (!templatesLoaded) return Pair(emptyList(), -1.0)
 
         val regions = findTileRegions(screenshot)
-        if (regions.isEmpty()) return Pair(emptyList(), 0.0)
+        if (regions.isEmpty()) return Pair(emptyList(), -2.0)
 
         val srcMat = Mat()
         Utils.bitmapToMat(screenshot, srcMat)
@@ -166,17 +239,20 @@ object TileMatcher {
 
         val results = mutableListOf<MatchResult>()
         for (region in regions.sortedBy { it.x }) {
-            // 裁切牌区域
-            val tileMat = Mat(srcMat, Rect(region.x, region.y, region.w, region.h))
+            // 边界保护
+            val rx = region.x.coerceAtLeast(0)
+            val ry = region.y.coerceAtLeast(0)
+            val rw = minOf(region.w, srcMat.cols() - rx)
+            val rh = minOf(region.h, srcMat.rows() - ry)
+            if (rw <= 0 || rh <= 0) continue
 
-            // 对每个模板做匹配
+            val tileMat = Mat(srcMat, Rect(rx, ry, rw, rh))
             var bestId = -1
             var bestScore = 0.0
 
             for ((tileId, template) in templates) {
-                // 调整模板大小匹配目标
                 val resized = Mat()
-                Imgproc.resize(template, resized, Size(region.w.toDouble(), region.h.toDouble()))
+                Imgproc.resize(template, resized, Size(rw.toDouble(), rh.toDouble()))
 
                 val result = Mat()
                 Imgproc.matchTemplate(tileMat, resized, result, Imgproc.TM_CCOEFF_NORMED)
@@ -189,18 +265,14 @@ object TileMatcher {
                     bestId = tileId
                 }
             }
-
             tileMat.release()
 
             if (bestId >= 0) {
-                val needsCheck = bestScore < 0.6  // 低于60%置信度标记为需确认
-                results.add(MatchResult(bestId, bestScore, needsCheck))
+                results.add(MatchResult(bestId, bestScore, bestScore < 0.55))
             }
         }
-
         srcMat.release()
 
-        // 总体置信度: 结果中可靠比例
         val reliableCount = results.count { !it.needsCheck }
         val overallConfidence = if (results.isNotEmpty()) {
             reliableCount.toDouble() / results.size
@@ -209,56 +281,51 @@ object TileMatcher {
         return Pair(results, overallConfidence)
     }
 
-    // ─── 查找牌区域 ───
-
-    data class RectRegion(val x: Int, val y: Int, val w: Int, val h: Int)
+    // ─── 查找牌区域 (Canny边缘检测 + 轮廓查找) ───
 
     fun findTileRegions(bitmap: Bitmap): List<RectRegion> {
         val width = bitmap.width
         val height = bitmap.height
 
-        // 转OpenCV Mat进行边缘检测
         val src = Mat()
         Utils.bitmapToMat(bitmap, src)
         Imgproc.cvtColor(src, src, Imgproc.COLOR_RGBA2GRAY)
 
-        // Canny边缘检测
-        val edges = Mat()
-        Imgproc.Canny(src, edges, 50.0, 150.0)
+        // 自适应阈值: 根据图片大小调整Canny参数
+        val scale = kotlin.math.sqrt((width * height).toDouble() / 2_000_000.0).coerceIn(0.8, 2.0)
+        val lowThreshold = (40.0 * scale).coerceIn(30.0, 100.0)
+        val highThreshold = (120.0 * scale).coerceIn(90.0, 200.0)
 
-        // 膨胀连接邻近边缘
+        val edges = Mat()
+        Imgproc.Canny(src, edges, lowThreshold, highThreshold)
+
         val dilated = Mat()
         val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
         Imgproc.dilate(edges, dilated, kernel, Point(-1.0, -1.0), 2)
 
-        // 找轮廓
         val contours = mutableListOf<MatOfPoint>()
         val hierarchy = Mat()
         Imgproc.findContours(dilated, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
 
         val regions = mutableListOf<RectRegion>()
         val imgArea = width * height
-        val minArea = imgArea / 800    // 最小牌面积
-        val maxArea = imgArea / 4      // 最大牌面积
+        val minArea = imgArea / 1200
+        val maxArea = imgArea / 5
 
         for (contour in contours) {
             val rect = Imgproc.boundingRect(contour)
             val area = rect.width * rect.height
-
             if (area in minArea..maxArea) {
                 val ratio = rect.width.toDouble() / rect.height
-                // 牌的比例: 宽<高, 比约0.55-0.8
-                if (ratio in 0.5..0.85) {
+                if (ratio in 0.45..0.90) {
                     regions.add(RectRegion(rect.x, rect.y, rect.width, rect.height))
                 }
             }
         }
 
-        // 清理
         src.release(); edges.release(); dilated.release(); hierarchy.release()
         for (c in contours) c.release()
 
-        // 按x排序，去重
         val sorted = regions.sortedBy { it.x }
         return mergeNearby(sorted)
     }
@@ -266,12 +333,10 @@ object TileMatcher {
     private fun mergeNearby(regions: List<RectRegion>): List<RectRegion> {
         if (regions.isEmpty()) return regions
         val merged = mutableListOf(regions[0])
-
         for (i in 1 until regions.size) {
             val last = merged.last()
             val curr = regions[i]
             if (curr.x - last.x < last.w * 0.4) {
-                // 重叠，保留大的
                 if (curr.w * curr.h > last.w * last.h) {
                     merged[merged.lastIndex] = curr
                 }
@@ -282,11 +347,8 @@ object TileMatcher {
         return merged
     }
 
-    // ─── 工具: 调试截图 ───
+    // ─── 调试 ───
 
-    /**
-     * 保存截图用于调试/校准
-     */
     fun saveDebugImage(context: Context, bitmap: Bitmap, name: String): String {
         val dir = File(context.filesDir, "debug")
         if (!dir.exists()) dir.mkdirs()
@@ -295,5 +357,15 @@ object TileMatcher {
             bitmap.compress(Bitmap.CompressFormat.PNG, 90, out)
         }
         return file.absolutePath
+    }
+
+    // ─── 清理 ───
+
+    fun release() {
+        for ((_, mat) in templates) {
+            mat.release()
+        }
+        templates.clear()
+        templatesLoaded = false
     }
 }

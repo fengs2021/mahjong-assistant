@@ -28,10 +28,11 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(createLayout())
 
-        // 初始化OpenCV
+        // 初始化OpenCV + 加载预置模板
         val opencvOk = TileMatcher.init(this)
+        statusText.text = TileMatcher.getDiagnostic()
         if (!opencvOk) {
-            statusText.text = "⚠ 截取功能暂不可用 (需arm64/v7a设备)\n手动输入可正常使用"
+            statusText.text = "⚠ ${TileMatcher.getDiagnostic()}\n手动输入可正常使用"
         }
     }
 
