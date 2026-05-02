@@ -67,8 +67,8 @@ class CaptureForegroundService : Service() {
             intent?.getParcelableExtra(EXTRA_DATA_INTENT)
         }
 
-        if (resultCode == -1 || dataIntent == null) {
-            updateOverlay("● 截屏参数错误")
+        if (resultCode != Activity.RESULT_OK || dataIntent == null) {
+            updateOverlay("● 截屏参数错误 (code=$resultCode)")
             stopSelf()
             return START_NOT_STICKY
         }
