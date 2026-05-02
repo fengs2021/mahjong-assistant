@@ -115,7 +115,9 @@ class CaptureForegroundService : Service() {
 
                         if (results.size >= 13) {
                             val hand = results.map { it.tileId }.toIntArray()
+                            val uncertain = results.count { it.needsCheck }
                             sendToOverlay(hand)
+                            updateOverlay("● 识别${results.size}张" + if (uncertain > 0) " (${uncertain}张待确认)" else " ✓")
                             verifyWithTenhou(hand)
                         } else {
                             updateOverlay("● 检测到${results.size}张牌")
@@ -180,15 +182,29 @@ class CaptureForegroundService : Service() {
             try {
                 val q = toTenhouString(hand)
                 if (q.isEmpty()) return@Thread
-                val url = URL("https://tenhou.net/2/?$q")
+
+                // 先显示识别状态
+                updateOverlayStatusOnly("● 天凤验证中...")
+
+                val url = URL("https://tenhou.net/2/?q=$q")
                 val conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 5000; conn.readTimeout = 5000
-                conn.setRequestProperty("User-Agent", "MahjongAssistant/2.8")
-                val r = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).readText()
+                conn.setRequestProperty("User-Agent", "MahjongAssistant/3.0")
+                val html = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).readText()
                 conn.disconnect()
-                val lines = r.split("\n").take(3).joinToString("\n")
-                if (lines.isNotBlank()) updateOverlay("● 天凤: $lines")
-            } catch (_: Exception) {}
+
+                // 解析 <textarea rows="10"> 内容
+                val textarea = Regex("<textarea[^>]*rows=\"10\"[^>]*>(.*?)</textarea>", RegexOption.DOT_MATCHES_ALL)
+                    .find(html)?.groupValues?.get(1)?.trim() ?: html.take(200)
+                val lines = textarea.split("\n").take(3).joinToString(" | ")
+                if (lines.isNotBlank()) {
+                    updateOverlayStatusOnly("● 天凤: $lines")
+                } else {
+                    updateOverlayStatusOnly("● 天凤无结果")
+                }
+            } catch (e: Exception) {
+                updateOverlayStatusOnly("● 天凤: ${e.message?.take(20)}")
+            }
         }.start()
     }
 
@@ -221,6 +237,9 @@ class CaptureForegroundService : Service() {
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
         } catch (_: Exception) {}
     }
+
+    // 仅更新状态栏，不动手牌建议
+    private fun updateOverlayStatusOnly(msg: String) = updateOverlay(msg)
 
     override fun onBind(intent: Intent?) = null
 }
