@@ -10,6 +10,7 @@ import com.mahjong.assistant.engine.Tiles
 
 /**
  * 手动输入手牌 — 点击牌按钮组成14张手牌
+ * 每行牌在HorizontalScrollView中可左右拖动
  */
 class ManualInputActivity : AppCompatActivity() {
 
@@ -28,7 +29,6 @@ class ManualInputActivity : AppCompatActivity() {
             setBackgroundColor(0xFF1A3A1A.toInt())
             setPadding(12, 30, 12, 12)
         }.also { root ->
-            // 标题
             TextView(this).apply {
                 text = "手动输入手牌"
                 textSize = 18f
@@ -37,7 +37,6 @@ class ManualInputActivity : AppCompatActivity() {
                 setPadding(0, 0, 0, 12)
             }.also { root.addView(it) }
 
-            // 当前手牌显示
             handLabel = TextView(this).apply {
                 text = "请点击牌按钮 (0/14)"
                 textSize = 15f
@@ -49,8 +48,8 @@ class ManualInputActivity : AppCompatActivity() {
             }
             root.addView(handLabel)
 
-            // 牌按钮网格
-            val gridContainer = ScrollView(this).apply {
+            // 可垂直滚动的整体容器
+            val scrollContainer = ScrollView(this).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
                 )
@@ -61,14 +60,14 @@ class ManualInputActivity : AppCompatActivity() {
                 setPadding(0, 8, 0, 8)
             }
 
-            // 萬子
+            // 每行: 标签 + [HorizontalScrollView > 牌按钮]
             addTileRow(grid, "萬", 0..8)
             addTileRow(grid, "筒", 9..17)
             addTileRow(grid, "索", 18..26)
             addTileRow(grid, "字", 27..33, true)
 
-            gridContainer.addView(grid)
-            root.addView(gridContainer)
+            scrollContainer.addView(grid)
+            root.addView(scrollContainer)
 
             // 控制按钮
             val ctrlRow = LinearLayout(this).apply {
@@ -97,7 +96,6 @@ class ManualInputActivity : AppCompatActivity() {
 
             root.addView(ctrlRow)
 
-            // 分析按钮
             analyzeBtn = Button(this).apply {
                 text = "分析 (需要14张)"
                 textSize = 16f
@@ -119,53 +117,73 @@ class ManualInputActivity : AppCompatActivity() {
         range: IntRange,
         isHonor: Boolean = false
     ) {
+        // 行容器
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 2, 0, 2)
+            setPadding(0, 6, 0, 6)
         }
 
+        // 标签（固定在左侧）
         TextView(this).apply {
             text = label
-            textSize = 11f
+            textSize = 14f
             setTextColor(0xFF6A9A6A.toInt())
-            layoutParams = LinearLayout.LayoutParams(32, LinearLayout.LayoutParams.WRAP_CONTENT)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                dpToPx(36), LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         }.also { row.addView(it) }
 
+        // 可水平拖动的牌按钮区域
+        val hsv = HorizontalScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+            )
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = android.view.View.OVER_SCROLL_ALWAYS
+        }
+
+        val tileRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+
         for (tileId in range) {
+            val maxCount = 4
             Button(this).apply {
                 text = if (isHonor) Tiles.name(tileId) else (tileId % 9 + 1).toString()
-                textSize = 11f
+                textSize = 13f
                 setBackgroundColor(0xFF2D5A2D.toInt())
                 setTextColor(0xFFA0F0A0.toInt())
                 minWidth = 0
-                setPadding(6, 4, 6, 4)
+                minHeight = 0
+                setPadding(dpToPx(8), dpToPx(6), dpToPx(8), dpToPx(6))
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { marginEnd = 2 }
-
-                // 计数器显示剩余可添加数
-                val maxCount = 4
-                val countInHand = { currentTiles.count { it == tileId } }
+                ).apply { marginEnd = dpToPx(3) }
 
                 setOnClickListener {
                     if (currentTiles.size >= 14) {
                         Toast.makeText(this@ManualInputActivity, "最多14张", Toast.LENGTH_SHORT).show()
                         return@setOnClickListener
                     }
-                    if (countInHand() >= maxCount) {
+                    if (currentTiles.count { it == tileId } >= maxCount) {
                         Toast.makeText(this@ManualInputActivity, "${Tiles.name(tileId)} 最多4张", Toast.LENGTH_SHORT).show()
                         return@setOnClickListener
                     }
                     currentTiles.add(tileId)
                     updateDisplay()
                 }
-            }.also { row.addView(it) }
+            }.also { tileRow.addView(it) }
         }
 
+        hsv.addView(tileRow)
+        row.addView(hsv)
         container.addView(row)
     }
+
+    private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
 
     private fun deleteTile() {
         if (currentTiles.isNotEmpty()) {
@@ -196,11 +214,8 @@ class ManualInputActivity : AppCompatActivity() {
 
     private fun analyze() {
         if (currentTiles.size != 14) return
-
         val handArray = currentTiles.sorted().toIntArray()
-        val intent = Intent().apply {
-            putExtra("hand_tiles", handArray)
-        }
+        val intent = Intent().apply { putExtra("hand_tiles", handArray) }
         setResult(Activity.RESULT_OK, intent)
         finish()
     }

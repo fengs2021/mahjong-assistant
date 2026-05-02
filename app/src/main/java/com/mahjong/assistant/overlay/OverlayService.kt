@@ -41,6 +41,7 @@ class OverlayService : Service() {
         const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "com.mahjong.assistant.STOP"
         const val ACTION_UPDATE = "com.mahjong.assistant.UPDATE"
+        const val ACTION_UPDATE_STATUS = "com.mahjong.assistant.UPDATE_STATUS"
         const val EXTRA_HAND = "hand_tiles"
     }
 
@@ -345,6 +346,12 @@ class OverlayService : Service() {
                     if (msg != null) {
                         statusLabel.text = msg
                     }
+                }
+            }
+            ACTION_UPDATE_STATUS -> {
+                val msg = intent.getStringExtra("status_msg")
+                if (msg != null) {
+                    statusLabel.text = msg
                 }
             }
         }
