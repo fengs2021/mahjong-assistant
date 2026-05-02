@@ -314,13 +314,18 @@ class OverlayService : Service() {
 
     private fun onCapture() {
         statusLabel.text = "● 截取中..."
-        // TODO: 启动截屏流程 (MediaProjection)
-        // 通过 Broadcast 或直接调用 CaptureActivity
+        // 启动透明CaptureActivity处理MediaProjection
+        val intent = Intent(this, com.mahjong.assistant.capture.CaptureActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
     }
 
     private fun onManualInput() {
-        statusLabel.text = "● 手动输入"
-        // TODO: 打开手动输入Activity
+        val intent = Intent(this, com.mahjong.assistant.ManualInputActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
     }
 
     // ─── Service 生命周期 ───
@@ -333,8 +338,13 @@ class OverlayService : Service() {
             }
             ACTION_UPDATE -> {
                 val handArray = intent.getIntArrayExtra(EXTRA_HAND)
-                if (handArray != null) {
+                if (handArray != null && handArray.size == 14) {
                     updateAdvice(handArray)
+                } else {
+                    val msg = intent.getStringExtra("status_msg")
+                    if (msg != null) {
+                        statusLabel.text = msg
+                    }
                 }
             }
         }
