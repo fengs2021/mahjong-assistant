@@ -11,8 +11,8 @@ android {
         applicationId = "com.mahjong.assistant"
         minSdk = 28
         targetSdk = 35
-        versionCode = 11
-        versionName = "3.1"
+        versionCode = 12
+        versionName = "3.2"
     }
 
     buildTypes {

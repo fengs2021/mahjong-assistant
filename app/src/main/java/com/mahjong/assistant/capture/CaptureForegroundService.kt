@@ -12,6 +12,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import androidx.core.app.NotificationCompat
+import com.mahjong.assistant.engine.Tiles
 import com.mahjong.assistant.overlay.OverlayService
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -115,12 +116,18 @@ class CaptureForegroundService : Service() {
 
                         if (results.size >= 13) {
                             val hand = results.map { it.tileId }.toIntArray()
+                            val handStr = Tiles.toDisplayString(hand)
                             val uncertain = results.count { it.needsCheck }
+                            updateOverlay("● 识别${results.size}张: $handStr" +
+                                if (uncertain > 0) " | ⚠${uncertain}张待确认" else " ✓")
                             sendToOverlay(hand)
-                            updateOverlay("● 识别${results.size}张" + if (uncertain > 0) " (${uncertain}张待确认)" else " ✓")
-                            verifyWithTenhou(hand)
+
+                            // 延迟1秒调天凤，让用户先看到识别结果
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                verifyWithTenhou(hand)
+                            }, 1200)
                         } else {
-                            updateOverlay("● 检测到${results.size}张牌")
+                            updateOverlay("● 仅检测${results.size}张，至少需13张")
                         }
                     } else {
                         updateOverlay("● 截屏无数据")
