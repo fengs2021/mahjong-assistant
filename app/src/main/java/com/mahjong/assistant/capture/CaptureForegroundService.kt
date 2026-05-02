@@ -130,6 +130,14 @@ class CaptureForegroundService : Service() {
                 }
             }, mainHandler)
 
+            // Android 15: 必须在createVirtualDisplay前注册回调
+            projection!!.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    if (!captured) updateOverlay("● 截屏被系统终止")
+                    cleanup()
+                }
+            }, mainHandler)
+
             virtualDisplay = projection!!.createVirtualDisplay(
                 "mahjong-capture",
                 metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
