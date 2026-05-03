@@ -357,22 +357,30 @@ object TileMatcher {
         val dFaceRight = drawnSlotDynamic.faceLeft + drawnSlotDynamic.faceW
         val dFaceBottom = drawnSlotDynamic.faceTop + drawnSlotDynamic.faceH
         if (dFaceRight <= gray.cols() && dFaceBottom <= gray.rows()) {
-            val tileMat = Mat(gray, Rect(drawnSlotDynamic.faceLeft, drawnSlotDynamic.faceTop, drawnSlotDynamic.faceW, drawnSlotDynamic.faceH))
-            // 检查该位置是否有牌: 灰度均值>80才算有牌(排除纯桌面背景)
-            val meanCheck = MatOfDouble()
-            Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
-            val hasTile = meanCheck.get(0, 0)[0] > 80.0
-            meanCheck.release()
-            if (hasTile) {
-                val (tileId, score) = matchSingleTile(tileMat)
-                if (tileId >= 0) {
-                    results.add(MatchResult(tileId, score, score < 0.70))
-                    FLog.i("TileMatcher", "  drawn: ${Tiles.name(tileId)} (${"%.3f".format(score)})")
+            // 副露时摸牌位置可能偏移, 小范围搜索最佳匹配
+            var bestDrawnTile = -1; var bestDrawnScore = 0.0; var bestDrawnX = drawnSlotDynamic.faceLeft
+            for (dx in intArrayOf(-5, 0, 5)) {
+                val sx = (drawnSlotDynamic.faceLeft + dx).coerceIn(0, gray.cols() - drawnSlotDynamic.faceW)
+                if (sx == drawnSlotDynamic.faceLeft && dx != 0) continue // 边界失败
+                val tileMat = Mat(gray, Rect(sx, drawnSlotDynamic.faceTop, drawnSlotDynamic.faceW, drawnSlotDynamic.faceH))
+                val meanCheck = MatOfDouble()
+                Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
+                val hasTile = meanCheck.get(0, 0)[0] > 80.0
+                meanCheck.release()
+                if (hasTile) {
+                    val (tid, score) = matchSingleTile(tileMat)
+                    if (tid >= 0 && score > bestDrawnScore) {
+                        bestDrawnScore = score; bestDrawnTile = tid; bestDrawnX = sx
+                    }
                 }
+                tileMat.release()
+            }
+            if (bestDrawnTile >= 0) {
+                results.add(MatchResult(bestDrawnTile, bestDrawnScore, bestDrawnScore < 0.70))
+                FLog.i("TileMatcher", "  drawn: ${Tiles.name(bestDrawnTile)} (${"%.3f".format(bestDrawnScore)}) x=$bestDrawnX")
             } else {
                 FLog.i("TileMatcher", "  drawn: 无牌(桌面背景)")
             }
-            tileMat.release()
         }
 
         gray.release()
