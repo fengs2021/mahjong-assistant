@@ -541,7 +541,6 @@ class OverlayService : Service() {
         isAutoCapturing = true
         autoBtn.text = "⏸ 停止"
         autoBtn.setBackgroundColor(0xFFFF6B35.toInt())
-        log("● 自动截图 (每${autoIntervalMs / 1000}秒)")
         FLog.i("OverlaySvc", "auto capture started")
 
         val runnable = object : Runnable {
@@ -560,8 +559,7 @@ class OverlayService : Service() {
         autoRunnable?.let { autoHandler.removeCallbacks(it) }
         autoRunnable = null
         autoBtn.text = "🔄 自动"
-        autoBtn.setBackgroundColor(colorPanel)
-        log("● 自动截图已停止")
+        autoBtn.setBackgroundColor(0x40000000.toInt())
         FLog.i("OverlaySvc", "auto capture stopped")
     }
 
