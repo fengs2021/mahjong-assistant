@@ -1,0 +1,39 @@
+# 雀魂模板切割坐标 —— PPG-AN00 横屏 2800×1264 dpi=560
+# 最终校准: 2026-05-03
+
+SCREEN = (2800, 1264)
+
+# ═══ 主手牌 (13张) ═══
+HAND_X_OFFSET = 300    # 手牌区域x起点
+FIRST_TILE_X = 236     # 第一张牌左边缘(相对HAND_X_OFFSET)
+TILE_SLOT_W = 108      # 牌位宽度(含边框)
+TILE_SPACING = 111     # 牌位间距(=108+3间隙)
+TILE_GAP = 3           # 牌间间隙
+
+# 牌面裁剪
+BORDER_LR = 5          # 左右裁边
+FACE_Y1 = 1106         # 牌面上边
+FACE_Y2 = 1249         # 牌面下边
+FACE_W = 98            # 牌面宽度 (=108-10)
+FACE_H = 143           # 牌面高度 (=1249-1106)
+
+# 主手牌右边缘
+MAIN_HAND_RIGHT = HAND_X_OFFSET + FIRST_TILE_X + 12 * TILE_SPACING + TILE_SLOT_W  # 1976
+
+# ═══ 摸牌 (第14张, drawn tile) ═══
+DRAWN_GAP = 38         # 与主手牌右边缘间距
+DRAWN_SLOT_X = 2014    # 摸牌左边缘(原始截图x坐标)
+DRAWN_SLOT_W = TILE_SLOT_W  # 108, 与主牌相同
+
+# 摸牌裁剪
+DRAWN_FACE_LEFT  = DRAWN_SLOT_X + BORDER_LR   # 2019
+DRAWN_FACE_RIGHT = DRAWN_SLOT_X + TILE_SLOT_W - BORDER_LR  # 2117
+DRAWN_FACE_Y1 = FACE_Y1  # 1106
+DRAWN_FACE_Y2 = FACE_Y2  # 1249
+
+# ═══ 模板匹配参数 ═══
+# 推荐阈值 (TM_CCOEFF_NORMED): 0.80 常规 / 0.70 白(31) 五筒(13) 八筒(16) 九筒(17) / 0.85 四索(21) 七索(24) 九索(26) 一索(18)
+# 新模板平均匹配分: 0.995-1.000 (远高于阈值)
+
+# 模板尺寸: 98×143 PNG RGBA
+# 模板目录: assets/tiles/ (34张, 中文命名)
