@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.provider.Settings
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
@@ -13,6 +15,7 @@ import com.mahjong.assistant.overlay.OverlayService
 import com.mahjong.assistant.util.FLog
 import java.io.File
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 
 /**
@@ -20,6 +23,8 @@ import java.util.concurrent.TimeUnit
  *
  * AccessibilityService.takeScreenshot() (API 34+) 不依赖 MediaProjection,
  * 不需要 foreground service 声明。
+ *
+ * 使用后台 HandlerThread 接收截图回调，避免 mainExecutor 排队导致的 5 秒超时。
  */
 class ScreenCaptureService : AccessibilityService() {
 
@@ -43,6 +48,10 @@ class ScreenCaptureService : AccessibilityService() {
         }
     }
 
+    private var captureThread: HandlerThread? = null
+    private var captureHandler: Handler? = null
+    private var captureExecutor: Executor? = null
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         // 不监听事件，仅用于截图
     }
@@ -52,11 +61,18 @@ class ScreenCaptureService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        FLog.i("A11ySvc", "onServiceConnected")
+        captureThread = HandlerThread("CaptureThread").apply { start() }
+        captureHandler = Handler(captureThread!!.looper)
+        captureExecutor = Executor { captureHandler!!.post(it) }
+        FLog.i("A11ySvc", "onServiceConnected (HandlerThread started)")
     }
 
     override fun onDestroy() {
         instance = null
+        captureThread?.quitSafely()
+        captureThread = null
+        captureHandler = null
+        captureExecutor = null
         FLog.i("A11ySvc", "onDestroy")
         super.onDestroy()
     }
@@ -71,10 +87,17 @@ class ScreenCaptureService : AccessibilityService() {
         val latch = CountDownLatch(1)
         var bitmap: Bitmap? = null
 
+        val executor = captureExecutor
+        if (executor == null) {
+            FLog.e("A11ySvc", "captureExecutor 未初始化")
+            sendErrorToOverlay("服务未就绪")
+            return
+        }
+
         try {
             takeScreenshot(
                 Display.DEFAULT_DISPLAY,
-                mainExecutor,
+                executor,
                 object : AccessibilityService.TakeScreenshotCallback {
                     override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
                         FLog.i("A11ySvc", "takeScreenshot OK")
