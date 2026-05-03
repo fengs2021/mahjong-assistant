@@ -570,7 +570,7 @@ object TileMatcher {
         // 副露区域: 底部右侧, 与手牌同高度
         // 手牌 y=1106~1249 (h=143), 副露取同高+余量
         val meldY = 1086           // 手牌上边缘-20
-        val meldH = 183            // 手牌高+40
+        val meldH = minOf(183, imgH - meldY)  // 手牌高+40, 不超屏幕底
         val meldX = 1700           // 手牌13slot结束位置右侧
         val meldW = imgW - meldX
 
