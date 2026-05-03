@@ -10,9 +10,9 @@ android {
     defaultConfig {
         applicationId = "com.mahjong.assistant"
         minSdk = 28
-        targetSdk = 35
-        versionCode = 12
-        versionName = "3.2"
+        targetSdk = 34
+        versionCode = 13
+        versionName = "5.2.1"
     }
 
     buildTypes {
