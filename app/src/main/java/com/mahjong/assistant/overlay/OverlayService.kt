@@ -37,7 +37,6 @@ class OverlayService : Service() {
     private lateinit var tileDisplay: TextView
     private lateinit var shantenLabel: TextView
     private lateinit var recommendLabel: TextView
-    private lateinit var altContainer: LinearLayout
     private lateinit var captureBtn: Button
     private lateinit var manualBtn: Button
     private lateinit var autoBtn: Button
@@ -167,7 +166,6 @@ class OverlayService : Service() {
     private fun createOverlay() {
         val ctx = this
 
-        // 配色
         val colorBg = 0xD9185018.toInt()
         val colorPanel = 0x40000000.toInt()
         val colorAccent = 0xFF5CFF5C.toInt()
@@ -180,139 +178,106 @@ class OverlayService : Service() {
             }
         }
 
-        // 主容器
         val container = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            background = roundedBg(colorBg, 12f)
-            setPadding(4, 4, 4, 4)
+            background = roundedBg(colorBg, 10f)
+            setPadding(3, 2, 3, 3)
         }
 
-        // 标题栏
+        // 标题栏: 文字 + 小关闭图标
         val titleBar = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(6, 4, 4, 4)
+            setPadding(4, 2, 2, 2)
             gravity = Gravity.CENTER_VERTICAL
         }
-
-        val dot = TextView(ctx).apply {
-            text = "●"
-            textSize = 8f; setTextColor(colorAccent)
-            setPadding(0, 0, 4, 0)
-        }
-        titleBar.addView(dot)
-
         val titleText = TextView(ctx).apply {
             text = "牌效助手"
-            textSize = 11f; setTextColor(colorAccent)
+            textSize = 10f; setTextColor(colorAccent)
         }
         titleBar.addView(titleText, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-
-        val closeBtn = Button(ctx).apply {
-            text = "✕"; textSize = 10f; minWidth = 0; minHeight = 0
-            setTextColor(colorSub)
-            setBackgroundColor(colorPanel)
-            setPadding(6, 2, 6, 2)
+        val closeBtn = TextView(ctx).apply {
+            text = "✕"; textSize = 10f
+            setTextColor(0xFF558855.toInt())
+            setPadding(8, 0, 4, 0)
             setOnClickListener { stopSelf() }
         }
         titleBar.addView(closeBtn)
         container.addView(titleBar)
 
-        // 当前识别牌型（紧凑显示）
+        // 当前牌型
         tileDisplay = TextView(ctx).apply {
             text = "等候截图..."
             textSize = 11f; setTextColor(colorAccent)
             setSingleLine(false); maxLines = 2
             gravity = Gravity.CENTER
-            setPadding(4, 4, 4, 2)
+            setPadding(2, 3, 2, 1)
             setOnClickListener { openReviewForEdit() }
         }
         container.addView(tileDisplay, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = 2 })
+        ))
 
-        // 分隔线
-        val sep = View(ctx).apply {
+        // 分隔
+        container.addView(View(ctx).apply {
             setBackgroundColor(0xFF3A6A3A.toInt())
-        }
-        container.addView(sep, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 1
-        ).apply { topMargin = 2 })
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1))
 
         // 向听数
         shantenLabel = TextView(ctx).apply {
-            text = "向听: --"; textSize = 16f
+            text = "向听: --"; textSize = 15f
             setTextColor(colorAccent); gravity = Gravity.CENTER
-            setPadding(0, 4, 0, 2)
-            background = roundedBg(colorPanel, 6f)
+            setPadding(0, 3, 0, 1)
+            background = roundedBg(colorPanel, 5f)
             setOnClickListener { openReviewForEdit() }
         }
         container.addView(shantenLabel, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = 4 })
+        ).apply { topMargin = 3 })
 
-        // 推荐切牌卡片
-        val recCard = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            background = roundedBg(colorPanel, 8f)
-            setPadding(8, 6, 8, 8)
-        }
-        TextView(ctx).apply {
-            text = "🏆 推荐切牌"; textSize = 9f; setTextColor(colorSub)
-            setPadding(0, 0, 0, 2)
-        }.also { recCard.addView(it) }
+        // 推荐切牌 (内联显示前2)
         recommendLabel = TextView(ctx).apply {
-            text = "等待分析..."; textSize = 14f; setTextColor(colorAccent)
+            text = "等待分析..."; textSize = 12f; setTextColor(colorAccent)
             gravity = Gravity.CENTER
+            setSingleLine(false); maxLines = 2
+            setPadding(4, 4, 4, 4)
+            background = roundedBg(colorPanel, 6f)
             setOnClickListener { openReviewForEdit() }
         }
-        recCard.addView(recommendLabel)
-        container.addView(recCard, LinearLayout.LayoutParams(
+        container.addView(recommendLabel, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = 4 })
+        ).apply { topMargin = 3 })
 
-        // 备选列表
-        altContainer = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(2, 2, 2, 0)
-        }
-        container.addView(altContainer)
-
-        // 控制按钮
+        // 控制按钮 (小)
         val btnRow = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, 2, 0, 0)
         }
-
         captureBtn = Button(ctx).apply {
-            text = "📷"; textSize = 9f; minWidth = 0; minHeight = 0
+            text = "📷"; textSize = 10f; minWidth = 0; minHeight = 0
             setBackgroundColor(0xFF2D6A2D.toInt()); setTextColor(colorText)
-            setPadding(0, 4, 0, 4)
+            setPadding(0, 2, 0, 2)
             setOnClickListener { onCapture() }
         }
         btnRow.addView(captureBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 2 })
-
         manualBtn = Button(ctx).apply {
-            text = "✏"; textSize = 9f; minWidth = 0; minHeight = 0
+            text = "✏"; textSize = 10f; minWidth = 0; minHeight = 0
             setBackgroundColor(colorPanel); setTextColor(colorSub)
-            setPadding(0, 4, 0, 4)
+            setPadding(0, 2, 0, 2)
             setOnClickListener { onManualInput() }
         }
-        btnRow.addView(manualBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 4 })
-
+        btnRow.addView(manualBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 2 })
         autoBtn = Button(ctx).apply {
-            text = "🔄 自动"; textSize = 11f; minWidth = 0; minHeight = 0
+            text = "🔄"; textSize = 10f; minWidth = 0; minHeight = 0
             setBackgroundColor(colorPanel); setTextColor(colorSub)
-            setPadding(0, 8, 0, 8)
+            setPadding(0, 2, 0, 2)
             setOnClickListener { toggleAutoCapture() }
         }
         btnRow.addView(autoBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-
         container.addView(btnRow)
 
         overlayView = container
         this.titleBar = titleBar
 
-        // Window参数
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
@@ -321,7 +286,7 @@ class OverlayService : Service() {
         }
 
         layoutParams = WindowManager.LayoutParams(
-            (170 * resources.displayMetrics.density).toInt(),
+            (140 * resources.displayMetrics.density).toInt(),
             WindowManager.LayoutParams.WRAP_CONTENT,
             type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -419,22 +384,15 @@ class OverlayService : Service() {
             else -> 0xFFA0F0A0.toInt()
         })
 
-        // 推荐
+        // 推荐 (内联前2)
         if (advice.isNotEmpty()) {
             val best = advice[0]
-            recommendLabel.text = "切 ${best.tileName}  (进张${best.ukeire}枚)"
-
-            // 备选
-            altContainer.removeAllViews()
-            for (i in 1 until minOf(5, advice.size)) {
-                val a = advice[i]
-                val tv = TextView(this).apply {
-                    text = "  ${i + 1}. 切${a.tileName}  [${a.ukeire}枚]"
-                    textSize = 9f
-                    setTextColor(0xFF6A9A6A.toInt())
-                }
-                altContainer.addView(tv)
+            val sb = StringBuilder("🏆 切${best.tileName} 进${best.ukeire}枚")
+            if (advice.size >= 2) {
+                val second = advice[1]
+                sb.append(" • 次切${second.tileName}")
             }
+            recommendLabel.text = sb.toString()
         }
 
         val handStr = Tiles.toCompactString(hand)
@@ -483,21 +441,10 @@ class OverlayService : Service() {
         })
 
         if (ukeireTiles.isNotEmpty()) {
-            recommendLabel.text = "进张: ${ukeireTiles.size}种${totalUkeire}枚"
-            altContainer.removeAllViews()
-            val names = ukeireTiles.take(10).joinToString(" ") {
-                "${Tiles.name(it.first)}×${it.second}"
-            }
-            val tv = TextView(this).apply {
-                text = names
-                textSize = 9f
-                setTextColor(0xFF6A9A6A.toInt())
-                setPadding(4, 2, 4, 0)
-            }
-            altContainer.addView(tv)
+            val names = ukeireTiles.take(6).joinToString(" ") { "${Tiles.name(it.first)}×${it.second}" }
+            recommendLabel.text = "进${ukeireTiles.size}种${totalUkeire}枚: $names"
         } else {
             recommendLabel.text = "无有效进张"
-            altContainer.removeAllViews()
         }
     }
 
@@ -539,7 +486,7 @@ class OverlayService : Service() {
     private fun startAutoCapture() {
         if (isAutoCapturing) return
         isAutoCapturing = true
-        autoBtn.text = "⏸ 停止"
+        autoBtn.text = "⏸️"
         autoBtn.setBackgroundColor(0xFFFF6B35.toInt())
         FLog.i("OverlaySvc", "auto capture started")
 
@@ -558,7 +505,7 @@ class OverlayService : Service() {
         isAutoCapturing = false
         autoRunnable?.let { autoHandler.removeCallbacks(it) }
         autoRunnable = null
-        autoBtn.text = "🔄 自动"
+        autoBtn.text = "🔄"
         autoBtn.setBackgroundColor(0x40000000.toInt())
         FLog.i("OverlaySvc", "auto capture stopped")
     }
