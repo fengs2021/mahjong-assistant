@@ -154,9 +154,16 @@ class MainActivity : AppCompatActivity() {
     private fun startOverlayService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(this)) {
             val intent = Intent(this, OverlayService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
+                }
+            } catch (e: Exception) {
+                // Android 15+ 可能因后台启动限制抛出 ForegroundServiceStartNotAllowedException
+                // Service 内部会在 onCreate 自己调 startForeground
+                android.util.Log.w("MainActivity", "startForegroundService失败, 回退startService: ${e.message}")
                 startService(intent)
             }
         }

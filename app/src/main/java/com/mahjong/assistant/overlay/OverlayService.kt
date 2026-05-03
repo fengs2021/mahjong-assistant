@@ -86,25 +86,35 @@ class OverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        FLog.init(filesDir)
-        FLog.i("OverlaySvc", "onCreate")
+        try {
+            FLog.init(filesDir)
+            FLog.i("OverlaySvc", "onCreate")
 
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
-        val m = resources.displayMetrics
-        screenDpi = m.densityDpi
-        FLog.i("OverlaySvc", "dpi=$screenDpi")
-        val tmOk = TileMatcher.init(this)
-        FLog.i("OverlaySvc", "TileMatcher.init=$tmOk diag=${TileMatcher.getDiagnostic()}")
-        checkMajsoulPackage()
-        createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification(),
-            if (Build.VERSION.SDK_INT >= 34) android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            val m = resources.displayMetrics
+            screenDpi = m.densityDpi
+            FLog.i("OverlaySvc", "dpi=$screenDpi")
+            val tmOk = TileMatcher.init(this)
+            FLog.i("OverlaySvc", "TileMatcher.init=$tmOk diag=${TileMatcher.getDiagnostic()}")
+            checkMajsoulPackage()
+            createNotificationChannel()
+            val fgTypes = if (Build.VERSION.SDK_INT >= 34)
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             else 0
-        )
-        createOverlay()
-        log("就绪 | dpi=$screenDpi")
+            startForeground(NOTIFICATION_ID, buildNotification(), fgTypes)
+            FLog.i("OverlaySvc", "startForeground OK")
+            createOverlay()
+            FLog.i("OverlaySvc", "createOverlay OK")
+            log("就绪 | dpi=$screenDpi")
+        } catch (e: Exception) {
+            FLog.e("OverlaySvc", "onCreate崩溃", e)
+            stopSelf()
+        } catch (e: Error) {
+            FLog.e("OverlaySvc", "onCreate JNI崩溃", e)
+            stopSelf()
+        }
     }
 
     // ─── 通知 (前台Service必需) ───
