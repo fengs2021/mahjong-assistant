@@ -306,8 +306,7 @@ class OverlayService : Service() {
 
         titleBar.setOnTouchListener(DragTouchListener())
         windowManager.addView(overlayView, layoutParams)
-        val (sw, sh) = getScreenSize()
-        FLog.i("OverlaySvc", "overlay created: ${sw}x${sh} dpi=$screenDpi")
+        FLog.i("OverlaySvc", "overlay created: dpi=$screenDpi")
     }
 
     // ─── 回调 ───
@@ -415,20 +414,6 @@ class OverlayService : Service() {
 
         val handStr = Tiles.toDisplayString(hand)
         log("● 手牌: $handStr")
-    }
-
-    private fun scheduleDelayedCapture(reason: String) {
-        if (captureScheduled) {
-            FLog.i("OverlaySvc", "scheduleDelayedCapture 跳过(已调度): $reason")
-            return
-        }
-        captureScheduled = true
-        FLog.i("OverlaySvc", "scheduleDelayedCapture: $reason, 4s后截图")
-        log("● $reason, 4s后自动截图")
-        mainHandler.postDelayed({
-            captureScheduled = false
-            onCapture()
-        }, 4000)
     }
 
     /** 13张手牌: 向听数 + 有效进张 */
