@@ -62,6 +62,12 @@ class OverlayService : Service() {
     private var lastConfidences = DoubleArray(0)
     private var lastScreenshotPath: String? = null
 
+    // 内嵌牌选择面板
+    private var isPickerVisible = false
+    private lateinit var pickerPanel: LinearLayout
+    private var pickerButtons = mutableMapOf<Int, Button>()
+    private val editedHand = mutableListOf<Int>()
+
     companion object {
         const val CHANNEL_ID = "mahjong_overlay"
         const val NOTIFICATION_ID = 1
@@ -275,6 +281,10 @@ class OverlayService : Service() {
         btnRow.addView(autoBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         container.addView(btnRow)
 
+        // 内嵌牌选择面板 (默认隐藏)
+        pickerPanel = createInlinePicker()
+        container.addView(pickerPanel)
+
         overlayView = container
         this.titleBar = titleBar
 
@@ -361,6 +371,7 @@ class OverlayService : Service() {
 
     fun updateAdvice(hand: IntArray) {
         if (hand.size == 13) {
+            currentHand = hand
             updateAdviceShantenOnly(hand)
             return
         }
@@ -516,15 +527,135 @@ class OverlayService : Service() {
         launchReview(lastTileIds, lastConfidences, lastScreenshotPath)
     }
 
+    // ─── 内嵌牌选择面板 ───
+
+    private fun createInlinePicker(): LinearLayout {
+        val ctx = this
+        val panel = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(2, 4, 2, 2)
+        }
+
+        // 4列×9行 = 34牌 + 确认/清空
+        val grid = GridLayout(ctx).apply {
+            columnCount = 4
+            useDefaultMargins = false
+        }
+
+        val tileNames = arrayOf(
+            "一万","二万","三万","四万","五万","六万","七万","八万","九万",
+            "一筒","二筒","三筒","四筒","五筒","六筒","七筒","八筒","九筒",
+            "一索","二索","三索","四索","五索","六索","七索","八索","九索",
+            "东","南","西","北","白","发","中"
+        )
+
+        for (tileId in 0..33) {
+            val btn = Button(ctx).apply {
+                text = tileNames[tileId]
+                textSize = 9f; minWidth = 0; minHeight = 0
+                setPadding(4, 4, 4, 4)
+                setBackgroundColor(0xFF2D5A2D.toInt())
+                setTextColor(0xFFA0F0A0.toInt())
+                setOnClickListener { onTilePicked(tileId) }
+                val params = GridLayout.LayoutParams().apply {
+                    width = 0; height = GridLayout.LayoutParams.WRAP_CONTENT
+                    columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                    setMargins(2, 2, 2, 2)
+                }
+                layoutParams = params
+            }
+            pickerButtons[tileId] = btn
+            grid.addView(btn)
+        }
+        panel.addView(grid)
+
+        // 操作行: 清空 + 确认
+        val opRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 4, 0, 0)
+        }
+        val clearBtn = Button(ctx).apply {
+            text = "清空"; textSize = 9f; minWidth = 0; minHeight = 0
+            setBackgroundColor(0xFF553333.toInt()); setTextColor(0xFFFFAAAA.toInt())
+            setPadding(8, 4, 8, 4)
+            setOnClickListener { editedHand.clear(); refreshPickerButtons() }
+        }
+        opRow.addView(clearBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 4 })
+        val confirmBtn = Button(ctx).apply {
+            text = "✓ 确认"; textSize = 9f; minWidth = 0; minHeight = 0
+            setBackgroundColor(0xFF2D6A2D.toInt()); setTextColor(0xFF5CFF5C.toInt())
+            setPadding(8, 4, 8, 4)
+            setOnClickListener { confirmManualHand() }
+        }
+        opRow.addView(confirmBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        panel.addView(opRow)
+
+        return panel
+    }
+
+    private fun togglePicker() {
+        isPickerVisible = !isPickerVisible
+        if (isPickerVisible) {
+            // 初始化为当前手牌
+            editedHand.clear()
+            if (currentHand.isNotEmpty()) {
+                editedHand.addAll(currentHand.toList())
+            }
+            refreshPickerButtons()
+            pickerPanel.visibility = View.VISIBLE
+            manualBtn.setBackgroundColor(0xFF2D6A2D.toInt())
+            manualBtn.setTextColor(0xFF5CFF5C.toInt())
+        } else {
+            pickerPanel.visibility = View.GONE
+            manualBtn.setBackgroundColor(colorPanel)
+            manualBtn.setTextColor(0xFF80B080.toInt())
+        }
+    }
+
+    private fun onTilePicked(tileId: Int) {
+        val cnt = editedHand.count { it == tileId }
+        if (cnt >= 4) {
+            editedHand.removeAll { it == tileId }
+        } else {
+            if (editedHand.size >= 14) return // 最多14张
+            editedHand.add(tileId)
+        }
+        editedHand.sort()
+        refreshPickerButtons()
+    }
+
+    private fun refreshPickerButtons() {
+        for ((tileId, btn) in pickerButtons) {
+            val cnt = editedHand.count { it == tileId }
+            val name = btn.text.toString().replace(Regex("×\\d"), "")
+            btn.text = if (cnt > 0) "${name}×$cnt" else name
+            btn.setBackgroundColor(if (cnt >= 4) 0xFF2D2D2D.toInt() else 0xFF2D5A2D.toInt())
+            btn.setTextColor(if (cnt >= 4) 0xFF888888.toInt() else 0xFFA0F0A0.toInt())
+        }
+    }
+
+    private fun confirmManualHand() {
+        val total = editedHand.size
+        if (total !in 13..14) {
+            tileDisplay.text = "需要13或14张牌 (当前${total}张)"
+            return
+        }
+        isPickerVisible = false
+        pickerPanel.visibility = View.GONE
+        manualBtn.setBackgroundColor(colorPanel)
+        manualBtn.setTextColor(0xFF80B080.toInt())
+
+        val hand = editedHand.sorted().toIntArray()
+        updateAdvice(hand)
+    }
+
     private fun runOnUiThread(action: () -> Unit) {
         mainHandler.post(action)
     }
 
     private fun onManualInput() {
-        val intent = Intent(this, com.mahjong.assistant.ManualInputActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        startActivity(intent)
+        togglePicker()
     }
 
     // ─── Service 生命周期 ───
