@@ -554,7 +554,7 @@ object TileMatcher {
 
     // ═══════════════════════════════════════════
     // 副露区域扫描 (玩家鸣牌后的亮出牌组)
-    // 副露在屏幕右下, 牌面比手牌小(~57×76 vs 98×143)
+    // 副露在手牌同高度右侧, 牌面约手牌等大
     // ═══════════════════════════════════════════
 
     private fun scanMeldArea(screenshot: Bitmap): List<MatchResult> {
@@ -567,12 +567,12 @@ object TileMatcher {
 
         val imgW = gray.cols(); val imgH = gray.rows()
 
-        // 副露区域: 右下 65%×57% (x=35%~100%, y=25%~82%)
-        // 手牌在 y≈87% 以下, 副露在手牌上方
-        val meldX = (imgW * 0.35).toInt()
-        val meldY = (imgH * 0.25).toInt()
+        // 副露区域: 底部右侧, 与手牌同高度
+        // 手牌 y=1106~1249 (h=143), 副露取同高+余量
+        val meldY = 1086           // 手牌上边缘-20
+        val meldH = 183            // 手牌高+40
+        val meldX = 1700           // 手牌13slot结束位置右侧
         val meldW = imgW - meldX
-        val meldH = (imgH * 0.57).toInt()
 
         if (meldW < 50 || meldH < 30) {
             gray.release()
@@ -591,12 +591,11 @@ object TileMatcher {
         data class Hit(val tileId: Int, val x: Int, val y: Int, val score: Double)
         val hits = mutableListOf<Hit>()
 
-        // 副露牌尺寸 ~57×76, 模板 98×143 → targetScale≈0.53
-        // 缩放范围 0.35~0.85 覆盖副露尺寸变化
-        val meldTargetH = 76.0
-        val minScale = 0.35
-        val maxScale = 0.85
-        val scaleSteps = 11  // 0.35 + 10*0.05 = 0.85
+        // 副露牌与手牌等大(~98×143), 缩放 0.85~1.15
+        val meldTargetH = 143.0
+        val minScale = 0.85
+        val maxScale = 1.15
+        val scaleSteps = 7   // 0.85 + 6*0.05 = 1.15
 
         for ((tileId, template) in templates) {
             if (tileId == 31) continue
@@ -629,12 +628,10 @@ object TileMatcher {
 
         roi.release(); gray.release()
 
-        // 去重: 位置<20px OR 与手牌区重叠(y>imgH*0.82) → 保留最高分
+        // 去重: 位置<20px → 保留最高分
         val sorted = hits.sortedBy { it.x }
         val filtered = mutableListOf<Hit>()
         for (h in sorted) {
-            // 排除与手牌区重叠的结果 (手牌在 y≈87% 以下)
-            if (h.y > imgH * 0.82) continue
             val dupIdx = filtered.indexOfFirst {
                 kotlin.math.abs(it.x - h.x) < 20 && kotlin.math.abs(it.y - h.y) < 20
             }
