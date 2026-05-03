@@ -74,12 +74,18 @@ object Tiles {
         }
         return buildString {
             for (suit in charArrayOf('m', 'p', 's', 'z')) {
-                val nums = groups[suit]?.map {
-                    when (suit) {
-                        'm' -> it + 1; 'p' -> it - 8; 's' -> it - 17; else -> it - 26
-                    }
-                }?.sorted()?.joinToString("") ?: continue
-                append(nums).append(suit)
+                val tiles = groups[suit] ?: continue
+                if (suit == 'z') {
+                    // 字牌直接显示汉字: 東南西北白発中
+                    append(tiles.sorted().joinToString("") { name(it) })
+                } else {
+                    val nums = tiles.map {
+                        when (suit) {
+                            'm' -> it + 1; 'p' -> it - 8; 's' -> it - 17; else -> -1
+                        }
+                    }.sorted().joinToString("")
+                    append(nums).append(suit)
+                }
             }
         }
     }
