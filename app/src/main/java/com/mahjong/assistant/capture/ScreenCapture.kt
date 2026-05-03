@@ -3,6 +3,8 @@ package com.mahjong.assistant.capture
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import com.mahjong.assistant.engine.Tiles
+import com.mahjong.assistant.util.FLog
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.*
@@ -11,39 +13,75 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * 牌面模板匹配识别器 v2.0
+ * 牌面模板匹配识别器 v5.0
  *
- * 模板来源优先级:
- *   1. APK assets 预置模板 (34张雀魂标准牌面) — 开箱即用
- *   2. 内部存储手动校准模板 — 覆盖/补充标准模板
+ * 识别策略:
+ *   1. 精准定位 (主): 固定坐标裁剪每张牌, 直接模板匹配 — 快速精准
+ *   2. 白板检测: 方差<100 直判 — 解决白板特征少误判
+ *   3. 全图扫描 (兜底): 跨设备无坐标时使用
  *
- * 识别流程:
- *   截图 → Canny边缘检测找牌区域 → 模板匹配 → 返回tileId+置信度
+ * 模板: 98×143 设备专属 (PPG-AN00 2800×1264 dpi=560)
  */
 object TileMatcher {
 
     private const val TAG = "TileMatcher"
-    private const val ASSET_TILES_DIR = "tiles"     // assets/tiles/
-    private const val TEMPLATE_DIR = "tile_templates" // 内部存储模板目录
+    private const val ASSET_TILES_DIR = "tiles"
+    private const val TEMPLATE_DIR = "tile_templates"
 
     data class MatchResult(
-        val tileId: Int,         // 0-33
-        val confidence: Double,  // 0.0~1.0
-        val needsCheck: Boolean  // 置信度<0.55需人工确认
+        val tileId: Int,
+        val confidence: Double,
+        val needsCheck: Boolean
     )
 
     data class RectRegion(val x: Int, val y: Int, val w: Int, val h: Int)
+
+    /** 是否使用精准定位模式 (当前设备坐标匹配时启用) */
+    @Volatile var usePositionMode = true
+
+    // ─── 精准定位坐标 (PPG-AN00 横屏 2800×1264) ───
+    private data class TileSlot(
+        val slotLeft: Int,   // 牌位左边缘(原始截图x)
+        val slotTop: Int,    // 牌位上边缘(y)
+        val faceLeft: Int,   // 牌面左边缘(去掉3D边框)
+        val faceTop: Int,    // 牌面上边缘
+        val faceW: Int,      // 牌面宽度
+        val faceH: Int       // 牌面高度
+    )
+
+    // 主手牌13张 (间距111px)
+    private val mainHandSlots: List<TileSlot> = (0..12).map { i ->
+        val slotLeft = 300 + 236 + i * 111
+        val faceLeft = slotLeft + 5
+        TileSlot(
+            slotLeft = slotLeft,
+            slotTop = 1010,
+            faceLeft = faceLeft,
+            faceTop = 1106,
+            faceW = 98,
+            faceH = 143
+        )
+    }
+
+    // 摸牌 (第14张, 距主手牌右边缘38px)
+    private val drawnSlot = TileSlot(
+        slotLeft = 2014,
+        slotTop = 1010,
+        faceLeft = 2019,
+        faceTop = 1106,
+        faceW = 98,
+        faceH = 143
+    )
 
     // 模板缓存
     private val templates = mutableMapOf<Int, Mat>()
     @Volatile private var templatesLoaded = false
     private var initDiagnostic = "未初始化"
-
-    /** OpenCV是否加载成功 */
     private var opencvReady = false
 
-    // ─── tileId映射: 中文文件名 → ID ───
+    @Volatile var lastLog: String = ""
 
+    // ─── tileId映射 (兼容简繁体文件名) ───
     private val nameToId = mapOf(
         "一万" to 0,  "二万" to 1,  "三万" to 2,  "四万" to 3,  "五万" to 4,
         "六万" to 5,  "七万" to 6,  "八万" to 7,  "九万" to 8,
@@ -51,65 +89,66 @@ object TileMatcher {
         "六筒" to 14, "七筒" to 15, "八筒" to 16, "九筒" to 17,
         "一索" to 18, "二索" to 19, "三索" to 20, "四索" to 21, "五索" to 22,
         "六索" to 23, "七索" to 24, "八索" to 25, "九索" to 26,
-        "东" to 27,  "南" to 28,  "西" to 29,  "北" to 30,
-        "白" to 31,  "发" to 32,  "中" to 33
+        "东" to 27, "東" to 27, "南" to 28, "西" to 29, "北" to 30,
+        "白" to 31, "发" to 32, "発" to 32, "中" to 33
     )
 
-    // ─── 初始化 ───
+    // ─── 阈值 (新模板匹配分0.995+, 大幅提高门槛) ───
+    private val thresholds = IntArray(34) { 85 } // 默认0.85
+    init {
+        // 白板用方差检测, 不依赖模板匹配
+        thresholds[31] = 0  // 白 — 方差直判, 不用阈值
+    }
+    private fun getThreshold(tileId: Int): Double = thresholds[tileId].toDouble() / 100.0
 
+    // ─── 初始化 ───
     fun init(context: Context): Boolean {
+        FLog.i("TileMatcher", "init start")
         return try {
-            // 1. 加载OpenCV
             opencvReady = try {
                 OpenCVLoader.initLocal().also {
                     android.util.Log.i(TAG, "OpenCV initLocal: $it")
                 }
             } catch (e: UnsatisfiedLinkError) {
-                android.util.Log.e(TAG, "OpenCV UnsatisfiedLinkError: ${e.message}. ABI=${android.os.Build.SUPPORTED_ABIS.contentToString()}")
+                android.util.Log.e(TAG, "OpenCV UnsatisfiedLinkError: ${e.message}")
                 false
             }
 
             if (!opencvReady) {
-                initDiagnostic = "OpenCV加载失败 ABI=${android.os.Build.SUPPORTED_ABIS.contentToString()}"
+                initDiagnostic = "OpenCV加载失败"
                 return false
             }
 
-            // 2. 加载模板
             templatesLoaded = loadPresetTemplates(context)
             if (!templatesLoaded) {
-                // 回退: 尝试加载手动校准的模板
                 templatesLoaded = loadCalibratedTemplates(context)
             }
 
             initDiagnostic = if (templatesLoaded) {
-                "就绪: ${templates.size}/34 模板 OpenCV=${opencvReady}"
+                "就绪: ${templates.size}/34 模板 OpenCV=${opencvReady} 精准定位"
             } else {
-                "模板为空: assets未找到且无手动校准"
+                "模板为空"
             }
+            FLog.i("TileMatcher", initDiagnostic)
             android.util.Log.i(TAG, initDiagnostic)
             templatesLoaded
         } catch (e: Exception) {
             initDiagnostic = "初始化崩溃: ${e.message}"
-            android.util.Log.e(TAG, initDiagnostic, e)
+            FLog.e("TileMatcher", initDiagnostic, e)
             false
         }
     }
 
-    /** 诊断信息 */
     fun getDiagnostic(): String = "$initDiagnostic | 模板数=${templates.size} | OpenCV=$opencvReady"
     fun hasTemplates(): Boolean = templatesLoaded
     fun templateCount(): Int = templates.size
     fun isOpencvReady(): Boolean = opencvReady
 
-    // ─── 从assets加载预置模板 ───
-
+    // ─── 模板加载 ───
     private fun loadPresetTemplates(context: Context): Boolean {
         return try {
             val assets = context.assets
-            val tileFiles = assets.list(ASSET_TILES_DIR) ?: run {
-                android.util.Log.w(TAG, "assets/tiles/ 目录为空或不存在")
-                return false
-            }
+            val tileFiles = assets.list(ASSET_TILES_DIR) ?: return false
 
             var loaded = 0
             for (filename in tileFiles) {
@@ -124,25 +163,22 @@ object TileMatcher {
                     if (bitmap != null) {
                         val mat = Mat()
                         Utils.bitmapToMat(bitmap, mat)
-                        Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2BGR)
+                        Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
                         templates[tileId] = mat
                         bitmap.recycle()
                         loaded++
                     }
                 } catch (e: Exception) {
-                    android.util.Log.w(TAG, "加载模板失败: $filename — ${e.message}")
+                    android.util.Log.w(TAG, "加载模板失败: $filename")
                 }
             }
-
-            android.util.Log.i(TAG, "从assets加载 $loaded/34 模板")
+            android.util.Log.i(TAG, "从assets加载 $loaded/34 模板 (98×143)")
             loaded > 0
         } catch (e: Exception) {
             android.util.Log.e(TAG, "assets加载异常: ${e.message}", e)
             false
         }
     }
-
-    // ─── 从内部存储加载手动校准模板 ───
 
     private fun loadCalibratedTemplates(context: Context): Boolean {
         val dir = File(context.filesDir, TEMPLATE_DIR)
@@ -157,8 +193,7 @@ object TileMatcher {
                 if (bitmap != null) {
                     val mat = Mat()
                     Utils.bitmapToMat(bitmap, mat)
-                    Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2BGR)
-                    // 手动模板覆盖预置模板
+                    Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
                     templates[tileId]?.release()
                     templates[tileId] = mat
                     bitmap.recycle()
@@ -172,97 +207,319 @@ object TileMatcher {
         return templates.isNotEmpty()
     }
 
-    // ─── 手动校准 (保留接口兼容) ───
-
+    // ─── 手动校准 ───
     fun saveTemplate(
-        context: Context,
-        screenshot: Bitmap,
-        tileX: Int, tileY: Int, tileW: Int, tileH: Int,
-        tileId: Int
+        context: Context, screenshot: Bitmap,
+        tileX: Int, tileY: Int, tileW: Int, tileH: Int, tileId: Int
     ): Boolean {
         val dir = File(context.filesDir, TEMPLATE_DIR)
         if (!dir.exists()) dir.mkdirs()
 
         val tile = Bitmap.createBitmap(screenshot, tileX, tileY, tileW, tileH)
-        val normalized = Bitmap.createScaledBitmap(tile, 80, 112, true)
-        tile.recycle()
-
         val file = File(dir, "tile_${tileId}.png")
         FileOutputStream(file).use { out ->
-            normalized.compress(Bitmap.CompressFormat.PNG, 100, out)
+            tile.compress(Bitmap.CompressFormat.PNG, 100, out)
         }
-        normalized.recycle()
+        tile.recycle()
 
-        // 重新加载
         templates[tileId]?.release()
         val mat = Mat()
         val reloaded = BitmapFactory.decodeFile(file.absolutePath)
         Utils.bitmapToMat(reloaded, mat)
-        Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2BGR)
+        Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
         templates[tileId] = mat
         reloaded.recycle()
         templatesLoaded = true
         return true
     }
 
-    fun calibrateFromHand(
-        context: Context,
-        screenshot: Bitmap,
-        handTiles: IntArray
-    ): Int {
+    fun calibrateFromHand(context: Context, screenshot: Bitmap, handTiles: IntArray): Int {
         val regions = findTileRegions(screenshot)
         if (regions.size < handTiles.size) return 0
-
         var saved = 0
         val sortedRegions = regions.sortedBy { it.x }
         for (i in handTiles.indices) {
             if (i >= sortedRegions.size) break
             val r = sortedRegions[i]
-            if (saveTemplate(context, screenshot, r.x, r.y, r.w, r.h, handTiles[i])) {
-                saved++
-            }
+            if (saveTemplate(context, screenshot, r.x, r.y, r.w, r.h, handTiles[i])) saved++
         }
         return saved
     }
 
-    // ─── 可变阈值 (参考 Majiang-ref) ───
-    private val thresholds = IntArray(34) { 8 } // 默认0.80
-    init {
-        // 难识别牌 → 降低阈值
-        intArrayOf(13, 16, 17, 31).forEach { thresholds[it] = 7 }  // 5p,8p,9p,白 → 0.70
-        // 易混淆牌 → 提高阈值
-        intArrayOf(21, 24, 26).forEach { thresholds[it] = 85 }    // 4s,7s,9s → 0.85
-    }
-    private fun getThreshold(tileId: Int): Double = thresholds[tileId].toDouble() / 100.0
-
-    // ─── 识别: 模板匹配 ───
+    // ═══════════════════════════════════════════
+    // 识别主入口
+    // ═══════════════════════════════════════════
 
     fun recognize(screenshot: Bitmap): Pair<List<MatchResult>, Double> {
-        if (!templatesLoaded) return Pair(emptyList(), -1.0)
+        return try {
+            recognizeImpl(screenshot)
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "识别崩溃: ${e.message}", e)
+            lastLog = "识别异常: ${e.message?.take(80)}"
+            Pair(emptyList(), -1.0)
+        } catch (e: Error) {
+            android.util.Log.e(TAG, "识别JNI崩溃: ${e.message}", e)
+            lastLog = "识别JNI异常: ${e.message?.take(80)}"
+            Pair(emptyList(), -1.0)
+        }
+    }
 
-        val regions = findTileRegions(screenshot)
+    private fun recognizeImpl(screenshot: Bitmap): Pair<List<MatchResult>, Double> {
+        FLog.i("TileMatcher", "recognizeImpl start ${screenshot.width}x${screenshot.height}")
+        if (!templatesLoaded) {
+            lastLog = "模板未加载"
+            return Pair(emptyList(), -1.0)
+        }
 
-        val results = if (regions.size >= 5) {
-            recognizeByRegions(screenshot, regions)
+        // 策略: 精准定位 → 全图扫描兜底
+        val results = if (usePositionMode) {
+            val posResults = recognizeByPosition(screenshot)
+            if (posResults.size >= 13) {
+                posResults
+            } else {
+                // 不足13张 → 可能坐标不匹配, 回退全图扫描
+                FLog.w("TileMatcher", "精准定位仅${posResults.size}张, 回退全图扫描")
+                fullImageScan(screenshot)
+            }
         } else {
-            android.util.Log.w(TAG, "Canny仅${regions.size}区 → 全图扫描")
             fullImageScan(screenshot)
         }
 
         val reliableCount = results.count { !it.needsCheck }
-        val overallConfidence = if (results.isNotEmpty()) {
-            reliableCount.toDouble() / results.size
-        } else 0.0
+        val overallConfidence = if (results.isNotEmpty()) reliableCount.toDouble() / results.size else 0.0
 
+        val logParts = mutableListOf<String>()
+        logParts.add("截图: ${screenshot.width}×${screenshot.height}")
+        logParts.add("结果: ${results.size}张 | 高置信${reliableCount}张 | 模式=${if(usePositionMode)"精准" else "扫描"}")
+        val handStr = if (results.isNotEmpty()) {
+            Tiles.toDisplayString(results.map { it.tileId }.toIntArray())
+        } else "—"
+        logParts.add("手牌: $handStr")
+        if (results.size in 1..12) {
+            logParts.add("⚠ 检测不足13张，可在审核界面手动补牌")
+        }
+
+        lastLog = logParts.joinToString("\n")
+        FLog.i("TileMatcher", "recognizeImpl done: ${results.size} results, reliable=$reliableCount")
         return Pair(results, overallConfidence)
     }
 
-    // ─── Canny区域匹配 ───
+    // ═══════════════════════════════════════════
+    // 精准定位识别 (v5.0 新增)
+    // ═══════════════════════════════════════════
 
+    private fun recognizeByPosition(screenshot: Bitmap): List<MatchResult> {
+        FLog.i("TileMatcher", "recognizeByPosition start")
+        val srcMat = Mat()
+        Utils.bitmapToMat(screenshot, srcMat)  // RGBA
+        val gray = Mat()
+        Imgproc.cvtColor(srcMat, gray, Imgproc.COLOR_RGBA2GRAY)
+        srcMat.release()
+
+        val results = mutableListOf<MatchResult>()
+
+        // 主手牌 13张
+        for ((i, slot) in mainHandSlots.withIndex()) {
+            val faceRight = slot.faceLeft + slot.faceW
+            val faceBottom = slot.faceTop + slot.faceH
+            if (faceRight > gray.cols() || faceBottom > gray.rows()) continue
+
+            val tileMat = Mat(gray, Rect(slot.faceLeft, slot.faceTop, slot.faceW, slot.faceH))
+            val (tileId, score) = matchSingleTile(tileMat)
+            tileMat.release()
+
+            if (tileId >= 0) {
+                results.add(MatchResult(tileId, score, score < 0.70))
+                FLog.i("TileMatcher", "  slot[$i]: ${Tiles.name(tileId)} (${"%.3f".format(score)})")
+            }
+        }
+
+        // 摸牌 (仅当该位置有牌时检测)
+        val dFaceRight = drawnSlot.faceLeft + drawnSlot.faceW
+        val dFaceBottom = drawnSlot.faceTop + drawnSlot.faceH
+        if (dFaceRight <= gray.cols() && dFaceBottom <= gray.rows()) {
+            val tileMat = Mat(gray, Rect(drawnSlot.faceLeft, drawnSlot.faceTop, drawnSlot.faceW, drawnSlot.faceH))
+            // 检查该位置是否有牌: 灰度均值>80才算有牌(排除纯桌面背景)
+            val meanCheck = MatOfDouble()
+            Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
+            val hasTile = meanCheck.get(0, 0)[0] > 80.0
+            meanCheck.release()
+            if (hasTile) {
+                val (tileId, score) = matchSingleTile(tileMat)
+                if (tileId >= 0) {
+                    results.add(MatchResult(tileId, score, score < 0.70))
+                    FLog.i("TileMatcher", "  drawn: ${Tiles.name(tileId)} (${"%.3f".format(score)})")
+                }
+            } else {
+                FLog.i("TileMatcher", "  drawn: 无牌(桌面背景)")
+            }
+            tileMat.release()
+        }
+
+        gray.release()
+        FLog.i("TileMatcher", "recognizeByPosition done: ${results.size} tiles")
+        return results
+    }
+
+    /**
+     * 匹配单张牌: 方差检测(白板) → 模板匹配
+     * @return Pair(tileId, score), tileId=-1表示匹配失败
+     */
+    private fun matchSingleTile(tileGray: Mat): Pair<Int, Double> {
+        // 1. 方差检测 — 白板 (var<100)
+        if (isBlankTile(tileGray)) {
+            return Pair(31, 1.0)  // 白, 满分
+        }
+
+        // 2. 模板匹配
+        var bestId = -1
+        var bestScore = 0.0
+
+        for ((tileId, template) in templates) {
+            if (tileId == 31) continue  // 白跳过模板匹配
+
+            val resized = Mat()
+            Imgproc.resize(template, resized, Size(tileGray.cols().toDouble(), tileGray.rows().toDouble()))
+            val result = Mat()
+            Imgproc.matchTemplate(tileGray, resized, result, Imgproc.TM_CCOEFF_NORMED)
+            val score = result.get(0, 0)[0]
+            result.release(); resized.release()
+
+            if (score > bestScore) {
+                bestScore = score; bestId = tileId
+            }
+        }
+
+        // 阈值判定
+        return if (bestId >= 0 && bestScore >= getThreshold(bestId)) {
+            Pair(bestId, bestScore)
+        } else {
+            Pair(-1, bestScore)
+        }
+    }
+
+    /**
+     * 白板方差检测: 灰度方差<100 → 白板
+     * 白板是纯色面, 方差远低于所有其他牌种 (>1500)
+     */
+    private fun isBlankTile(tileGray: Mat): Boolean {
+        val mean = MatOfDouble(); val stddev = MatOfDouble()
+        Core.meanStdDev(tileGray, mean, stddev)
+        val avg = mean.get(0, 0)[0]          // 平均灰度
+        val variance = stddev.get(0, 0)[0].let { it * it }
+        mean.release(); stddev.release()
+        // 白板: 低方差(纯色面) AND 高亮度(米白~200+, 不是深蓝桌面~30)
+        return variance < 100.0 && avg > 150.0
+    }
+
+    // ═══════════════════════════════════════════
+    // 全图扫描 (兜底方案)
+    // ═══════════════════════════════════════════
+
+    private fun fullImageScan(screenshot: Bitmap): List<MatchResult> {
+        FLog.i("TileMatcher", "fullImageScan start")
+        val srcMat = Mat()
+        Utils.bitmapToMat(screenshot, srcMat)  // RGBA
+        val gray = Mat()
+        Imgproc.cvtColor(srcMat, gray, Imgproc.COLOR_RGBA2GRAY)
+
+        val imgW = gray.cols(); val imgH = gray.rows()
+
+        val handTop = (imgH * 0.78).toInt()
+        val handH = minOf((imgH * 0.20).toInt(), imgH - handTop)
+        val roiRaw = Mat(gray, Rect(0, handTop, imgW, handH))
+
+        val clahe = Imgproc.createCLAHE(3.0, Size(8.0, 8.0))
+        val roi = Mat()
+        clahe.apply(roiRaw, roi)
+        roiRaw.release()
+
+        FLog.i("TileMatcher", "ROI: handTop=$handTop handH=$handH imgW=$imgW imgH=$imgH")
+
+        data class Hit(val tileId: Int, val x: Int, val score: Double)
+
+        val hits = mutableListOf<Hit>()
+        val allBestScores = mutableMapOf<Int, Double>()
+
+        for ((tileId, template) in templates) {
+            if (tileId == 31) continue  // 白在全图模式走模板匹配(有CLAHE辅助)
+
+            val th = getThreshold(tileId)
+            val tH = template.rows().toDouble()
+            val tW = template.cols().toDouble()
+
+            val targetScale = handH / tH
+            val perTemplateScales = DoubleArray(11) { i -> targetScale * (0.75 + i * 0.05) }
+
+            var bestScore = 0.0
+            var bestX = 0
+
+            val templateEq = Mat()
+            clahe.apply(template, templateEq)
+
+            for (scale in perTemplateScales) {
+                val sw = (tW * scale).toInt()
+                val sh = (tH * scale).toInt()
+                if (sw < 8 || sh < 8 || sw > roi.cols() || sh > roi.rows()) continue
+
+                val resized = Mat()
+                Imgproc.resize(templateEq, resized, Size(sw.toDouble(), sh.toDouble()))
+                val result = Mat()
+                Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
+
+                val mm = Core.minMaxLoc(result)
+                if (mm.maxVal > bestScore) {
+                    bestScore = mm.maxVal; bestX = mm.maxLoc.x.toInt()
+                }
+                result.release(); resized.release()
+            }
+            templateEq.release()
+
+            allBestScores[tileId] = bestScore
+            if (bestScore >= th) {
+                hits.add(Hit(tileId, bestX, bestScore))
+            }
+        }  // end for templates
+        roi.release(); gray.release(); srcMat.release()
+
+        // 诊断日志
+        val allScoresStr = (0..33).joinToString(" ") { tid ->
+            val s = allBestScores[tid] ?: 0.0
+            val mark = if (s >= getThreshold(tid)) "OK" else "--"
+            "${Tiles.name(tid)}:${"%.2f".format(s)}$mark"
+        }
+        FLog.i("TileMatcher", "ALL34: $allScoresStr")
+        android.util.Log.i(TAG, "ALL34: $allScoresStr")
+
+        if (hits.isEmpty()) {
+            FLog.w("TileMatcher", "全图0结果")
+            return emptyList()
+        }
+
+        // x排序 + 去重
+        val sorted = hits.sortedBy { it.x }
+        val filtered = mutableListOf<Hit>()
+        for (h in sorted) {
+            val idx = filtered.indexOfFirst { kotlin.math.abs(it.x - h.x) < 15 }
+            if (idx < 0) filtered.add(h)
+            else if (h.score > filtered[idx].score) filtered[idx] = h
+        }
+
+        val count = IntArray(34)
+        val final = mutableListOf<Hit>()
+        for (h in filtered) {
+            if (count[h.tileId] < 4) { final.add(h); count[h.tileId]++ }
+        }
+
+        FLog.i("TileMatcher", "fullImageScan done: ${final.size} final")
+        return final.map { MatchResult(it.tileId, it.score, it.score < 0.55) }
+    }
+
+    // ─── Canny区域匹配 (保留用于校准) ───
     private fun recognizeByRegions(screenshot: Bitmap, regions: List<RectRegion>): List<MatchResult> {
         val srcMat = Mat()
         Utils.bitmapToMat(screenshot, srcMat)
-        Imgproc.cvtColor(srcMat, srcMat, Imgproc.COLOR_RGBA2BGR)
+        Imgproc.cvtColor(srcMat, srcMat, Imgproc.COLOR_RGBA2GRAY)
 
         val results = mutableListOf<MatchResult>()
         for (region in regions.sortedBy { it.x }) {
@@ -273,96 +530,27 @@ object TileMatcher {
             if (rw <= 0 || rh <= 0) continue
 
             val tileMat = Mat(srcMat, Rect(rx, ry, rw, rh))
-            var bestId = -1
-            var bestScore = 0.0
-
-            for ((tileId, template) in templates) {
-                val resized = Mat()
-                Imgproc.resize(template, resized, Size(rw.toDouble(), rh.toDouble()))
-                val result = Mat()
-                Imgproc.matchTemplate(tileMat, resized, result, Imgproc.TM_CCOEFF_NORMED)
-                val score = Core.minMaxLoc(result).maxVal
-                result.release(); resized.release()
-                if (score > bestScore) { bestScore = score; bestId = tileId }
-            }
+            val (tileId, score) = matchSingleTile(tileMat)
             tileMat.release()
-            if (bestId >= 0) results.add(MatchResult(bestId, bestScore, bestScore < 0.55))
+            if (tileId >= 0) results.add(MatchResult(tileId, score, score < 0.55))
         }
         srcMat.release()
         return results
     }
 
-    // ─── 全图扫描回退 (模仿 Majiang-ref) ───
-
-    private fun fullImageScan(screenshot: Bitmap): List<MatchResult> {
-        val srcMat = Mat()
-        Utils.bitmapToMat(screenshot, srcMat)
-        Imgproc.cvtColor(srcMat, srcMat, Imgproc.COLOR_RGBA2BGR)
-
-        // 只扫描下半区 (手牌区域)
-        val handTop = srcMat.rows() * 2 / 3
-        val roi = Mat(srcMat, Rect(0, handTop, srcMat.cols(), srcMat.rows() - handTop))
-
-        data class Hit(val tileId: Int, val x: Int, val score: Double)
-        val raw = mutableListOf<Hit>()
-
-        for ((tileId, template) in templates) {
-            val th = getThreshold(tileId)
-            val result = Mat()
-            Imgproc.matchTemplate(roi, template, result, Imgproc.TM_CCOEFF_NORMED)
-
-            // Core.compare → findNonZero = np.where(score >= threshold)
-            val mask = Mat()
-            Core.compare(result, Scalar(th), mask, Core.CMP_GE)
-            val pts = Mat()
-            Core.findNonZero(mask, pts)
-
-            if (!pts.empty()) {
-                for (i in 0 until pts.rows()) {
-                    val pt = pts.get(i, 0)
-                    val x = pt[0].toInt()
-                    val y = pt[1].toInt()
-                    raw.add(Hit(tileId, x, result.get(y, x)[0]))
-                }
-            }
-            pts.release(); mask.release(); result.release()
-        }
-        roi.release(); srcMat.release()
-
-        if (raw.isEmpty()) return emptyList()
-
-        // 按x排序, 去重 (距离 < 模板宽度的40%视为同一张牌)
-        val sorted = raw.sortedBy { it.x }
-        val merged = mutableListOf<Hit>()
-        for (hit in sorted) {
-            if (merged.isEmpty() || hit.x - merged.last().x > 30) {
-                merged.add(hit)
-            } else if (hit.score > merged.last().score) {
-                merged[merged.lastIndex] = hit  // 保留更高分
-            }
-        }
-
-        return merged.map { MatchResult(it.tileId, it.score, it.score < 0.55) }
-    }
-
-    // ─── 查找牌区域 (Canny边缘检测 + 轮廓查找) ───
-
+    // ─── Canny边缘检测 (保留用于校准) ───
     fun findTileRegions(bitmap: Bitmap): List<RectRegion> {
-        val width = bitmap.width
-        val height = bitmap.height
-
+        val width = bitmap.width; val height = bitmap.height
         val src = Mat()
         Utils.bitmapToMat(bitmap, src)
         Imgproc.cvtColor(src, src, Imgproc.COLOR_RGBA2GRAY)
 
-        // 自适应阈值: 根据图片大小调整Canny参数
         val scale = kotlin.math.sqrt((width * height).toDouble() / 2_000_000.0).coerceIn(0.8, 2.0)
         val lowThreshold = (40.0 * scale).coerceIn(30.0, 100.0)
         val highThreshold = (120.0 * scale).coerceIn(90.0, 200.0)
 
         val edges = Mat()
         Imgproc.Canny(src, edges, lowThreshold, highThreshold)
-
         val dilated = Mat()
         val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
         Imgproc.dilate(edges, dilated, kernel, Point(-1.0, -1.0), 2)
@@ -373,8 +561,7 @@ object TileMatcher {
 
         val regions = mutableListOf<RectRegion>()
         val imgArea = width * height
-        val minArea = imgArea / 1200
-        val maxArea = imgArea / 5
+        val minArea = imgArea / 1200; val maxArea = imgArea / 5
 
         for (contour in contours) {
             val rect = Imgproc.boundingRect(contour)
@@ -386,33 +573,24 @@ object TileMatcher {
                 }
             }
         }
-
         src.release(); edges.release(); dilated.release(); hierarchy.release()
         for (c in contours) c.release()
-
-        val sorted = regions.sortedBy { it.x }
-        return mergeNearby(sorted)
+        return mergeNearby(regions.sortedBy { it.x })
     }
 
     private fun mergeNearby(regions: List<RectRegion>): List<RectRegion> {
         if (regions.isEmpty()) return regions
         val merged = mutableListOf(regions[0])
         for (i in 1 until regions.size) {
-            val last = merged.last()
-            val curr = regions[i]
+            val last = merged.last(); val curr = regions[i]
             if (curr.x - last.x < last.w * 0.4) {
-                if (curr.w * curr.h > last.w * last.h) {
-                    merged[merged.lastIndex] = curr
-                }
-            } else {
-                merged.add(curr)
-            }
+                if (curr.w * curr.h > last.w * last.h) merged[merged.lastIndex] = curr
+            } else merged.add(curr)
         }
         return merged
     }
 
     // ─── 调试 ───
-
     fun saveDebugImage(context: Context, bitmap: Bitmap, name: String): String {
         val dir = File(context.filesDir, "debug")
         if (!dir.exists()) dir.mkdirs()
@@ -424,11 +602,8 @@ object TileMatcher {
     }
 
     // ─── 清理 ───
-
     fun release() {
-        for ((_, mat) in templates) {
-            mat.release()
-        }
+        for ((_, mat) in templates) mat.release()
         templates.clear()
         templatesLoaded = false
     }
