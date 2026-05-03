@@ -591,15 +591,16 @@ object TileMatcher {
         data class Hit(val tileId: Int, val x: Int, val y: Int, val score: Double)
         val hits = mutableListOf<Hit>()
 
-        // 副露牌与手牌等大(~98×143), 缩放 0.85~1.15
+        // 副露牌与手牌等大(~98×143), 缩放 0.85~1.15, 阈值降低容忍副露渲染差异
         val meldTargetH = 143.0
         val minScale = 0.85
         val maxScale = 1.15
         val scaleSteps = 7   // 0.85 + 6*0.05 = 1.15
+        val meldThreshold = 0.65
 
         for ((tileId, template) in templates) {
             if (tileId == 31) continue
-            val th = getThreshold(tileId)
+            val th = meldThreshold
             val tH = template.rows().toDouble()
             val tW = template.cols().toDouble()
             val targetScale = meldTargetH / tH
