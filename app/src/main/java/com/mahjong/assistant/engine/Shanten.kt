@@ -22,7 +22,28 @@ object Shanten {
         val chiitoi = calcChiitoi(counts)
         val kokushi = calcKokushi(counts)
 
-        return listOf(normal, chiitoi, kokushi).minByOrNull { it.shanten }!!
+        val best = listOf(normal, chiitoi, kokushi).minByOrNull { it.shanten }!!
+
+        // 边缘case校验: 14张手牌, 正常向听=0, 检查是否实际已和了
+        if (best.shanten == 0 && hand.size == 14 && best.type == "normal") {
+            // 尝试: 移除一张牌后, 若该13张手牌是听牌且移除的牌是待牌 → 和了
+            val seen = mutableSetOf<Int>()
+            for (t in hand) {
+                if (!seen.add(t)) continue
+                val after = hand.toMutableList().apply { removeAt(hand.indexOf(t)) }.toIntArray()
+                val afterResult = calculate(after)
+                if (afterResult.shanten == 0) {
+                    val waits = tenpaiWaits(IntArray(34).apply {
+                        for (tt in after) this[tt]++
+                    })
+                    if (t in waits) {
+                        return Result(-1, "normal", emptyList())
+                    }
+                }
+            }
+        }
+
+        return best
     }
 
     // ─── 一般形 ───
@@ -145,7 +166,7 @@ object Shanten {
     private fun calcChiitoi(counts: IntArray): Result {
         var pairs = 0
         for (c in counts) pairs += c / 2
-        val shanten = maxOf(0, 6 - pairs)
+        val shanten = 6 - pairs   // 7对=和了(-1), 无反听无负数修正
         return Result(shanten, "chiitoi", emptyList())
     }
 

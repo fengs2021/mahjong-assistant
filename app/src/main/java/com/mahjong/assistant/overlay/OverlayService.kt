@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.view.*
@@ -17,6 +18,7 @@ import com.mahjong.assistant.capture.ScreenCaptureService
 import com.mahjong.assistant.capture.TileMatcher
 import com.mahjong.assistant.engine.Efficiency
 import com.mahjong.assistant.engine.Shanten
+import com.mahjong.assistant.engine.TenhouClient
 import com.mahjong.assistant.engine.Tiles
 import com.mahjong.assistant.util.FLog
 import java.io.File
@@ -47,6 +49,11 @@ class OverlayService : Service() {
     private var autoRunnable: Runnable? = null
     private var isAutoCapturing = false
     private val autoIntervalMs = 3000L  // 3秒
+
+    // 天凤查询后台线程
+    private var tenhouThread: HandlerThread? = null
+    private var tenhouHandler: Handler? = null
+    private var tenhouWebView: android.webkit.WebView? = null
 
     // 存储最近识别结果，供点击跳转ReviewActivity
     private var lastTileIds = IntArray(0)
@@ -107,6 +114,19 @@ class OverlayService : Service() {
             createOverlay()
             FLog.i("OverlaySvc", "createOverlay OK")
             log("就绪 | dpi=$screenDpi")
+
+            // 天凤 WebView + 后台线程 (用于异步查询天凤牌理)
+            try {
+                tenhouWebView = android.webkit.WebView(this).apply {
+                    settings.javaScriptEnabled = true
+                }
+                TenhouClient.init(tenhouWebView!!)
+                tenhouThread = HandlerThread("TenhouThread").apply { start() }
+                tenhouHandler = Handler(tenhouThread!!.looper)
+                FLog.i("OverlaySvc", "TenhouClient init OK")
+            } catch (e: Exception) {
+                FLog.e("OverlaySvc", "TenhouClient init失败", e)
+            }
         } catch (e: Exception) {
             FLog.e("OverlaySvc", "onCreate崩溃", e)
             stopSelf()
@@ -430,6 +450,39 @@ class OverlayService : Service() {
 
         val handStr = Tiles.toDisplayString(hand)
         log("● 手牌: $handStr")
+
+        // 异步查询天凤牌理, 优先采用天凤推荐
+        val tenhouH = tenhouHandler
+        if (tenhouH != null && advice.isNotEmpty()) {
+            val localBest = advice[0]
+            tenhouH.post {
+                try {
+                    val th = TenhouClient.query(hand, 2500)
+                    if (th != null) {
+                        runOnUiThread {
+                            // 天凤推荐可能与本地不同, 更新建议区
+                            shantenLabel.text = when (th.shanten) {
+                                -1 -> "和了!!! [天凤]"
+                                0 -> "听牌! [天凤]"
+                                else -> "向听: ${th.shanten} [天凤]"
+                            }
+                            recommendLabel.text = "切 ${th.bestDiscardName}  (进张${th.ukeire}枚) [天凤]"
+                            if (th.bestDiscard != localBest.tile) {
+                                log("● 天凤: 切${th.bestDiscardName} (本地:切${localBest.tileName})")
+                            } else {
+                                log("● 天凤一致: 切${th.bestDiscardName}")
+                            }
+                        }
+                    } else {
+                        runOnUiThread {
+                            log("● 天凤查询失败, 使用本地引擎")
+                        }
+                    }
+                } catch (e: Exception) {
+                    FLog.e("OverlaySvc", "tenhou query error", e)
+                }
+            }
+        }
     }
 
     /** 13张手牌: 向听数 + 有效进张 */
@@ -629,6 +682,12 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         stopAutoCapture()
+        TenhouClient.release()
+        tenhouWebView?.destroy()
+        tenhouWebView = null
+        tenhouThread?.quitSafely()
+        tenhouThread = null
+        tenhouHandler = null
         FLog.i("OverlaySvc", "onDestroy")
         if (::overlayView.isInitialized && overlayView.isAttachedToWindow) {
             windowManager.removeView(overlayView)
