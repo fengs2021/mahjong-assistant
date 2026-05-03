@@ -99,9 +99,11 @@ class OverlayService : Service() {
             FLog.i("OverlaySvc", "TileMatcher.init=$tmOk diag=${TileMatcher.getDiagnostic()}")
             checkMajsoulPackage()
             createNotificationChannel()
+            // Android 15 禁止普通 App 在 startForeground 声明 mediaProjection
+            // (需要 CAPTURE_VIDEO_OUTPUT 签名级权限)
+            // 仅声明 specialUse; getMediaProjection() 在 targetSdk=34 时不检查 FGS type
             val fgTypes = if (Build.VERSION.SDK_INT >= 34)
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
-                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
             else 0
             startForeground(NOTIFICATION_ID, buildNotification(), fgTypes)
             FLog.i("OverlaySvc", "startForeground OK")
