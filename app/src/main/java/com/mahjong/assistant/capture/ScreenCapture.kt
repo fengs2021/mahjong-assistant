@@ -223,12 +223,12 @@ object TileMatcher {
                 val nameWithoutExt = filename.removeSuffix(".png")
                 // 解析: "八索_竖" → name="八索" direction=竖
                 val isVertical = nameWithoutExt.endsWith("_竖") || nameWithoutExt.endsWith("_竖2")
-                val isHorizontal = nameWithoutExt.endsWith("_横")
+                val isHorizontal = nameWithoutExt.endsWith("_横") || nameWithoutExt.endsWith("_横2")
                 if (!isVertical && !isHorizontal) continue
                 val tileName = if (isVertical) {
                     nameWithoutExt.removeSuffix("_竖").removeSuffix("_竖2")
                 } else {
-                    nameWithoutExt.removeSuffix("_横")
+                    nameWithoutExt.removeSuffix("_横").removeSuffix("_横2")
                 }
                 val tileId = nameToId[tileName] ?: continue
                 try {
