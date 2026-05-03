@@ -416,11 +416,10 @@ object TileMatcher {
         val dFaceRight = drawnSlotDynamic.faceLeft + drawnSlotDynamic.faceW
         val dFaceBottom = drawnSlotDynamic.faceTop + drawnSlotDynamic.faceH
         if (dFaceRight <= gray.cols() && dFaceBottom <= gray.rows()) {
-            // 副露时摸牌位置可能偏移, 小范围搜索最佳匹配
+            // 副露时摸牌位置可能偏移, 扩大搜索范围
             var bestDrawnTile = -1; var bestDrawnScore = 0.0; var bestDrawnX = drawnSlotDynamic.faceLeft
-            for (dx in intArrayOf(-5, 0, 5)) {
+            for (dx in -20..20 step 3) {
                 val sx = (drawnSlotDynamic.faceLeft + dx).coerceIn(0, gray.cols() - drawnSlotDynamic.faceW)
-                if (sx == drawnSlotDynamic.faceLeft && dx != 0) continue // 边界失败
                 val tileMat = Mat(gray, Rect(sx, drawnSlotDynamic.faceTop, drawnSlotDynamic.faceW, drawnSlotDynamic.faceH))
                 val meanCheck = MatOfDouble()
                 Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
@@ -641,7 +640,7 @@ object TileMatcher {
 
         FLog.i("TileMatcher", "副露ROI: x=$meldX y=$meldY w=$meldW h=$meldH (img=${imgW}x$imgH)")
 
-        data class Hit(val tileId: Int, val x: Int, val y: Int, val score: Double)
+        data class Hit(val tileId: Int, val x: Int, val y: Int, val w: Int, val h: Int, val score: Double)
         val hits = mutableListOf<Hit>()
 
         // 副露牌与手牌等大(~98×143), 缩放 0.85~1.15, 阈值降低容忍副露渲染差异
@@ -673,7 +672,7 @@ object TileMatcher {
                 Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
                 val mm = Core.minMaxLoc(result)
                 if (mm.maxVal >= th) {
-                    hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), mm.maxVal))
+                    hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), sw, sh, mm.maxVal))
                 }
                 result.release(); resized.release()
             }
@@ -698,7 +697,7 @@ object TileMatcher {
                     Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
                     val mm = Core.minMaxLoc(result)
                     if (mm.maxVal >= meldThreshold) {
-                        hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), mm.maxVal))
+                        hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), sw, sh, mm.maxVal))
                     }
                     result.release(); resized.release()
                 }
@@ -719,7 +718,7 @@ object TileMatcher {
                     Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
                     val mm = Core.minMaxLoc(result)
                     if (mm.maxVal >= meldThreshold) {
-                        hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), mm.maxVal))
+                        hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), sw, sh, mm.maxVal))
                     }
                     result.release(); resized.release()
                 }
@@ -729,18 +728,22 @@ object TileMatcher {
 
         roi.release(); gray.release()
 
-        // 去重: 位置<20px → 保留最高分
-        val sorted = hits.sortedBy { it.x }
+        // NMS去重: IoU>0.2合并, 保留最高分
+        hits.sortByDescending { it.score }
         val filtered = mutableListOf<Hit>()
-        for (h in sorted) {
-            val dupIdx = filtered.indexOfFirst {
-                kotlin.math.abs(it.x - h.x) < 20 && kotlin.math.abs(it.y - h.y) < 20
+        for (h in hits) {
+            // 排除摸牌/手牌区 (x<1500与手牌y重叠)
+            if (h.x < 1500 && kotlin.math.abs(h.y - 1106) < 50) continue
+            val overlap = filtered.any { k ->
+                val ix1 = maxOf(h.x, k.x); val iy1 = maxOf(h.y, k.y)
+                val ix2 = minOf(h.x + h.w, k.x + k.w); val iy2 = minOf(h.y + h.h, k.y + k.h)
+                if (ix1 < ix2 && iy1 < iy2) {
+                    val inter = (ix2 - ix1) * (iy2 - iy1).toDouble()
+                    val union = (h.w * h.h + k.w * k.h).toDouble() - inter
+                    inter / union > 0.2
+                } else false
             }
-            if (dupIdx < 0) {
-                filtered.add(h)
-            } else if (h.score > filtered[dupIdx].score) {
-                filtered[dupIdx] = h
-            }
+            if (!overlap) filtered.add(h)
         }
 
         val count = IntArray(34)
