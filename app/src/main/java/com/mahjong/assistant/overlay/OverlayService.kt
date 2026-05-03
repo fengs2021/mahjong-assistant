@@ -217,7 +217,6 @@ class OverlayService : Service() {
             setSingleLine(false); maxLines = 2
             gravity = Gravity.CENTER
             setPadding(2, 3, 2, 1)
-            setOnClickListener { openReviewForEdit() }
         }
         container.addView(tileDisplay, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -234,7 +233,6 @@ class OverlayService : Service() {
             setTextColor(colorAccent); gravity = Gravity.CENTER
             setPadding(0, 3, 0, 1)
             background = roundedBg(colorPanel, 5f)
-            setOnClickListener { openReviewForEdit() }
         }
         container.addView(shantenLabel, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -247,7 +245,6 @@ class OverlayService : Service() {
             setSingleLine(false); maxLines = 2
             setPadding(4, 4, 4, 4)
             background = roundedBg(colorPanel, 6f)
-            setOnClickListener { openReviewForEdit() }
         }
         container.addView(recommendLabel, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT

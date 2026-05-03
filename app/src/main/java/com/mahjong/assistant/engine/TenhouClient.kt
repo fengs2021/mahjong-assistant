@@ -180,30 +180,43 @@ object TenhouClient {
             var bestUkeire = 0
 
             for (line in lines) {
-                // 向聴数
+                // 向聴数 (天凤新格式可能不输出此行, 14张手牌=听牌)
                 when {
-                    line.contains("あと0") || line.contains("聴牌") ->
-                        shanten = 0
+                    line.contains("あと0") || line.contains("聴牌") -> shanten = 0
                     line.contains("あと1") -> shanten = 1
                     line.contains("あと2") -> shanten = 2
-                    line.contains("あと") -> {
-                        val match = Regex("あと(\\d)").find(line)
-                        shanten = match?.groupValues?.get(1)?.toIntOrNull() ?: shanten
+                    line.contains("向聴") -> {
+                        val m = Regex("向聴\\s*(\\d)").find(line)
+                        shanten = m?.groupValues?.get(1)?.toIntOrNull() ?: shanten
                     }
                 }
 
-                // "打 [X]" 行: 天凤推荐切牌
-                val discardMatch = Regex("打\\s*\\[(.+?)\\]").find(line)
+                // "打Xm" 行: 天凤推荐切牌 (新格式无方括号)
+                val discardMatch = Regex("打\\s*(\\d+[mpsz])").find(line)
                 if (discardMatch != null && bestDiscardName.isEmpty()) {
                     bestDiscardName = discardMatch.groupValues[1]
                 }
 
-                // 有効牌 N種M枚
-                val ukeireMatch = Regex("有効牌\\s*(\\d+)種(\\d+)枚").find(line)
-                if (ukeireMatch != null && bestDiscardName.isNotEmpty()) {
-                    bestUkeire = ukeireMatch.groupValues[2].toIntOrNull() ?: 0
-                    break // 找到第一个推荐就够了
+                // ukeire: 旧格式 "有効牌 N種M枚", 新格式 "摸[... M枚]"
+                val ukeireNew = Regex("(\\d+)枚\\]?$").find(line)
+                val ukeireOld = Regex("有効牌\\s*(\\d+)種(\\d+)枚").find(line)
+                if (bestDiscardName.isNotEmpty()) {
+                    when {
+                        ukeireOld != null -> {
+                            bestUkeire = ukeireOld.groupValues[2].toIntOrNull() ?: 0
+                            break
+                        }
+                        ukeireNew != null -> {
+                            bestUkeire = ukeireNew.groupValues[1].toIntOrNull() ?: 0
+                            break
+                        }
+                    }
                 }
+            }
+
+            // 14张手牌无あと行 → 听牌
+            if (shanten == 99 && hand.size == 14 && bestDiscardName.isNotEmpty()) {
+                shanten = 0
             }
 
             if (shanten == 99 || bestDiscardName.isEmpty()) {
