@@ -456,7 +456,7 @@ object TileMatcher {
                 val tH = template.rows().toDouble()
                 val tW = template.cols().toDouble()
                 // 牌面高度不可能超过200px, cap避免副露高ROI时targetScale过大
-                val targetScale = minOf(handH, 200.0) / tH
+                val targetScale = minOf(handH.toDouble(), 200.0) / tH
                 val perTemplateScales = DoubleArray(13) { i -> targetScale * (0.70 + i * 0.05) }
 
                 var bestScore = 0.0
