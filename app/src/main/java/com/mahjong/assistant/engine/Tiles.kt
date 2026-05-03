@@ -66,6 +66,26 @@ object Tiles {
         return result.sorted().toIntArray()
     }
 
+    /** 紧凑牌型: "123m 456p 789s 東南西北" */
+    fun toCompactString(tiles: IntArray): String {
+        val sorted = tiles.sortedArray()
+        val sb = StringBuilder()
+        for (suit in charArrayOf('m', 'p', 's', 'z')) {
+            val ofSuit = sorted.filter { suitOf(it) == suit }
+            if (ofSuit.isEmpty()) continue
+            if (sb.isNotEmpty()) sb.append(' ')
+            if (suit == 'z') {
+                sb.append(ofSuit.joinToString("") { name(it) })
+            } else {
+                sb.append(ofSuit.map {
+                    when (suit) { 'm' -> it + 1; 'p' -> it - 8; 's' -> it - 17; else -> 0 }
+                }.sorted().joinToString(""))
+                sb.append(suit)
+            }
+        }
+        return sb.toString()
+    }
+
     fun toDisplayString(tiles: IntArray): String {
         val groups = mutableMapOf<Char, MutableList<Int>>()
         for (t in tiles) {

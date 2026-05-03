@@ -34,10 +34,10 @@ class OverlayService : Service() {
 
     // UI 组件
     private lateinit var titleBar: LinearLayout
+    private lateinit var tileDisplay: TextView
     private lateinit var shantenLabel: TextView
     private lateinit var recommendLabel: TextView
     private lateinit var altContainer: LinearLayout
-    private lateinit var statusLabel: TextView
     private lateinit var captureBtn: Button
     private lateinit var manualBtn: Button
     private lateinit var autoBtn: Button
@@ -62,13 +62,6 @@ class OverlayService : Service() {
     private var lastTileIds = IntArray(0)
     private var lastConfidences = DoubleArray(0)
     private var lastScreenshotPath: String? = null
-
-    private val logLines = mutableListOf<String>()
-    private fun log(msg: String) {
-        logLines.add(msg)
-        if (logLines.size > 50) logLines.removeAt(0)
-        runOnUiThread { statusLabel.text = logLines.joinToString("\n") }
-    }
 
     companion object {
         const val CHANNEL_ID = "mahjong_overlay"
@@ -116,7 +109,7 @@ class OverlayService : Service() {
             FLog.i("OverlaySvc", "startForeground OK")
             createOverlay()
             FLog.i("OverlaySvc", "createOverlay OK")
-            log("就绪 | dpi=$screenDpi")
+            tileDisplay.text = "就绪"
 
             // 天凤 WebView + 后台线程 (用于异步查询天凤牌理)
             try {
@@ -174,15 +167,13 @@ class OverlayService : Service() {
     private fun createOverlay() {
         val ctx = this
 
-        // 配色 (借鉴 majsoul-tiles-android)
-        val colorBg = 0xD9185018.toInt()       // 深绿85%
-        val colorAccent = 0xFF5CFF5C.toInt()    // 亮绿
-        val colorText = 0xFFD0F0D0.toInt()      // 淡绿
-        val colorSub = 0xFF80B080.toInt()       // 中绿
-        val colorBorder = 0xFF3A6A3A.toInt()    // 边框绿
-        val colorRed = 0xFFFF5555.toInt()
+        // 配色
+        val colorBg = 0xD9185018.toInt()
+        val colorPanel = 0x40000000.toInt()
+        val colorAccent = 0xFF5CFF5C.toInt()
+        val colorText = 0xFFD0F0D0.toInt()
+        val colorSub = 0xFF80B080.toInt()
 
-        // 圆角辅助函数
         fun roundedBg(color: Int, radius: Float): android.graphics.drawable.GradientDrawable {
             return android.graphics.drawable.GradientDrawable().apply {
                 setColor(color); cornerRadius = radius
@@ -192,119 +183,118 @@ class OverlayService : Service() {
         // 主容器
         val container = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            background = roundedBg(colorBg, 16f)
-            setPadding(8, 8, 8, 8)
+            background = roundedBg(colorBg, 12f)
+            setPadding(4, 4, 4, 4)
         }
 
         // 标题栏
         val titleBar = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(10, 8, 6, 8)
+            setPadding(6, 4, 4, 4)
             gravity = Gravity.CENTER_VERTICAL
         }
 
         val dot = TextView(ctx).apply {
             text = "●"
-            textSize = 10f; setTextColor(colorAccent)
-            setPadding(0, 0, 8, 0)
+            textSize = 8f; setTextColor(colorAccent)
+            setPadding(0, 0, 4, 0)
         }
         titleBar.addView(dot)
 
         val titleText = TextView(ctx).apply {
             text = "牌效助手"
-            textSize = 15f; setTextColor(colorAccent)
+            textSize = 11f; setTextColor(colorAccent)
         }
         titleBar.addView(titleText, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
         val closeBtn = Button(ctx).apply {
-            text = "✕"; textSize = 12f; minWidth = 0; minHeight = 0
+            text = "✕"; textSize = 10f; minWidth = 0; minHeight = 0
             setTextColor(colorSub)
             setBackgroundColor(colorPanel)
-            setPadding(10, 4, 10, 4)
+            setPadding(6, 2, 6, 2)
             setOnClickListener { stopSelf() }
         }
         titleBar.addView(closeBtn)
         container.addView(titleBar)
 
+        // 当前识别牌型（紧凑显示）
+        tileDisplay = TextView(ctx).apply {
+            text = "等候截图..."
+            textSize = 11f; setTextColor(colorAccent)
+            setSingleLine(false); maxLines = 2
+            gravity = Gravity.CENTER
+            setPadding(4, 4, 4, 2)
+            setOnClickListener { openReviewForEdit() }
+        }
+        container.addView(tileDisplay, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 2 })
+
+        // 分隔线
+        val sep = View(ctx).apply {
+            setBackgroundColor(0xFF3A6A3A.toInt())
+        }
+        container.addView(sep, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 1
+        ).apply { topMargin = 2 })
+
         // 向听数
         shantenLabel = TextView(ctx).apply {
-            text = "向听: --"; textSize = 28f
+            text = "向听: --"; textSize = 16f
             setTextColor(colorAccent); gravity = Gravity.CENTER
-            setPadding(0, 8, 0, 4)
-            background = roundedBg(colorPanel, 8f)
+            setPadding(0, 4, 0, 2)
+            background = roundedBg(colorPanel, 6f)
             setOnClickListener { openReviewForEdit() }
         }
         container.addView(shantenLabel, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = 6 })
+        ).apply { topMargin = 4 })
 
         // 推荐切牌卡片
         val recCard = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            background = roundedBg(colorPanel, 10f)
-            setPadding(12, 10, 12, 12)
+            background = roundedBg(colorPanel, 8f)
+            setPadding(8, 6, 8, 8)
         }
         TextView(ctx).apply {
-            text = "🏆 推荐切牌"; textSize = 10f; setTextColor(colorSub)
-            setPadding(0, 0, 0, 4)
+            text = "🏆 推荐切牌"; textSize = 9f; setTextColor(colorSub)
+            setPadding(0, 0, 0, 2)
         }.also { recCard.addView(it) }
         recommendLabel = TextView(ctx).apply {
-            text = "等待分析..."; textSize = 20f; setTextColor(colorAccent)
+            text = "等待分析..."; textSize = 14f; setTextColor(colorAccent)
             gravity = Gravity.CENTER
             setOnClickListener { openReviewForEdit() }
         }
         recCard.addView(recommendLabel)
         container.addView(recCard, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = 6 })
+        ).apply { topMargin = 4 })
 
         // 备选列表
         altContainer = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(4, 4, 4, 0)
+            setPadding(2, 2, 2, 0)
         }
         container.addView(altContainer)
-
-        // 日志框 (加大, 滚动)
-        val logScroll = ScrollView(ctx).apply {
-            background = roundedBg(0x40000000.toInt(), 8f)
-        }
-        val logInner = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(8, 6, 8, 6)
-        }
-        statusLabel = TextView(ctx).apply {
-            text = "就绪"; textSize = 10f
-            setTextColor(0xFFA0D0A0.toInt())
-            typeface = android.graphics.Typeface.MONOSPACE
-            setSingleLine(false); maxLines = 30
-        }
-        logInner.addView(statusLabel)
-        logScroll.addView(logInner, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
-        container.addView(logScroll, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, (80 * resources.displayMetrics.density).toInt()
-        ).apply { topMargin = 6 })
 
         // 控制按钮
         val btnRow = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 4, 0, 0)
+            setPadding(0, 2, 0, 0)
         }
 
         captureBtn = Button(ctx).apply {
-            text = "📷 截取"; textSize = 11f; minWidth = 0; minHeight = 0
+            text = "📷"; textSize = 9f; minWidth = 0; minHeight = 0
             setBackgroundColor(0xFF2D6A2D.toInt()); setTextColor(colorText)
-            setPadding(0, 8, 0, 8)
+            setPadding(0, 4, 0, 4)
             setOnClickListener { onCapture() }
         }
-        btnRow.addView(captureBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 4 })
+        btnRow.addView(captureBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 2 })
 
         manualBtn = Button(ctx).apply {
-            text = "✏ 手动"; textSize = 11f; minWidth = 0; minHeight = 0
+            text = "✏"; textSize = 9f; minWidth = 0; minHeight = 0
             setBackgroundColor(colorPanel); setTextColor(colorSub)
-            setPadding(0, 8, 0, 8)
+            setPadding(0, 4, 0, 4)
             setOnClickListener { onManualInput() }
         }
         btnRow.addView(manualBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 4 })
@@ -331,7 +321,7 @@ class OverlayService : Service() {
         }
 
         layoutParams = WindowManager.LayoutParams(
-            (260 * resources.displayMetrics.density).toInt(),
+            (170 * resources.displayMetrics.density).toInt(),
             WindowManager.LayoutParams.WRAP_CONTENT,
             type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -369,13 +359,11 @@ class OverlayService : Service() {
                 if (intent != null) {
                     majsoulPkg = pkg
                     FLog.i("OverlaySvc", "✓ 找到雀魂: $pkg")
-                    log("✓ 雀魂: $pkg")
                     return
                 }
             } catch (_: Exception) {}
         }
-        FLog.w("OverlaySvc", "✗ 未找到雀魂! queries声明可能未生效, 请检查AndroidManifest")
-        log("✗ 未找到雀魂! 需queries声明")
+        FLog.w("OverlaySvc", "✗ 未找到雀魂! queries声明可能未生效")
     }
 
     private inner class DragTouchListener : View.OnTouchListener {
@@ -412,7 +400,6 @@ class OverlayService : Service() {
             return
         }
         if (hand.size != 14) {
-            log("● 需要13-14张牌 (当前${hand.size}张)")
             return
         }
 
@@ -443,41 +430,30 @@ class OverlayService : Service() {
                 val a = advice[i]
                 val tv = TextView(this).apply {
                     text = "  ${i + 1}. 切${a.tileName}  [${a.ukeire}枚]"
-                    textSize = 11f
+                    textSize = 9f
                     setTextColor(0xFF6A9A6A.toInt())
                 }
                 altContainer.addView(tv)
             }
         }
 
-        val handStr = Tiles.toDisplayString(hand)
-        log("● 手牌: $handStr")
+        val handStr = Tiles.toCompactString(hand)
+        tileDisplay.text = handStr
 
         // 异步查询天凤牌理, 优先采用天凤推荐
         val tenhouH = tenhouHandler
         if (tenhouH != null && advice.isNotEmpty()) {
-            val localBest = advice[0]
             tenhouH.post {
                 try {
                     val th = TenhouClient.query(hand, 2500)
                     if (th != null) {
                         runOnUiThread {
-                            // 天凤推荐可能与本地不同, 更新建议区
                             shantenLabel.text = when (th.shanten) {
                                 -1 -> "和了!!! [天凤]"
                                 0 -> "听牌! [天凤]"
                                 else -> "向听: ${th.shanten} [天凤]"
                             }
                             recommendLabel.text = "切 ${th.bestDiscardName}  (进张${th.ukeire}枚) [天凤]"
-                            if (th.bestDiscard != localBest.tile) {
-                                log("● 天凤: 切${th.bestDiscardName} (本地:切${localBest.tileName})")
-                            } else {
-                                log("● 天凤一致: 切${th.bestDiscardName}")
-                            }
-                        }
-                    } else {
-                        runOnUiThread {
-                            log("● 天凤查询失败, 使用本地引擎")
                         }
                     }
                 } catch (e: Exception) {
@@ -492,6 +468,8 @@ class OverlayService : Service() {
         if (hand13.size != 13) return
         val (shanten, ukeireTiles) = Efficiency.analyze13(hand13)
         val totalUkeire = ukeireTiles.sumOf { it.second }
+
+        tileDisplay.text = Tiles.toCompactString(hand13)
 
         shantenLabel.text = when {
             shanten <= -1 -> "和了!!!"
@@ -512,7 +490,7 @@ class OverlayService : Service() {
             }
             val tv = TextView(this).apply {
                 text = names
-                textSize = 11f
+                textSize = 9f
                 setTextColor(0xFF6A9A6A.toInt())
                 setPadding(4, 2, 4, 0)
             }
@@ -537,22 +515,15 @@ class OverlayService : Service() {
     }
 
     private fun onCapture() {
-        // Android 15: 截图通过 AccessibilityService.takeScreenshot() (API 34+)
-        // 不需要 MediaProjection, 绕过 FGS 限制
         if (Build.VERSION.SDK_INT < 34) {
-            log("✖ 需要 Android 14+")
             return
         }
         val svc = ScreenCaptureService.instance
         if (svc != null) {
             FLog.i("OverlaySvc", "onCapture → AccessibilityService")
-            log("● 截图 → 无障碍服务")
             svc.captureAndRecognize()
         } else if (!ScreenCaptureService.isEnabled(this)) {
-            log("● 无障碍服务未开启 → 跳转设置")
             ScreenCaptureService.openSettings(this)
-        } else {
-            log("● 无障碍已开启但服务未连接, 请重新打开悬浮窗")
         }
     }
 
@@ -596,10 +567,7 @@ class OverlayService : Service() {
 
     /** 点击建议区 → 打开ReviewActivity手动编辑 */
     private fun openReviewForEdit() {
-        if (lastTileIds.isEmpty()) {
-            log("● 请先截取识别")
-            return
-        }
+        if (lastTileIds.isEmpty()) return
         launchReview(lastTileIds, lastConfidences, lastScreenshotPath)
     }
 
@@ -630,52 +598,34 @@ class OverlayService : Service() {
                     @Suppress("DEPRECATION")
                     captureResultData = intent.getParcelableExtra(EXTRA_DATA)
                 }
-                log("授权已保存 (供CaptureActivity复用)")
                 return START_STICKY
             }
             ACTION_CAPTURE_DONE -> {
-                // CaptureActivity 截图+识别完成后发来的结果
                 val tileIds = intent.getIntArrayExtra("tile_ids") ?: intArrayOf()
                 val confidences = intent.getDoubleArrayExtra("confidences") ?: doubleArrayOf()
-                val detectLog = intent.getStringExtra("log") ?: TileMatcher.lastLog
                 val ssPath = intent.getStringExtra("screenshot_path")
 
                 lastTileIds = tileIds
                 lastConfidences = confidences
                 lastScreenshotPath = ssPath
 
-                log(detectLog)
-                val handStr = if (tileIds.isNotEmpty()) Tiles.toDisplayString(tileIds) else "—"
+                // 更新牌型显示
+                tileDisplay.text = if (tileIds.isNotEmpty())
+                    Tiles.toCompactString(tileIds) else "未识别"
 
                 if (tileIds.size >= 14) {
-                    log("● 识别${tileIds.size}张: $handStr")
                     updateAdvice(tileIds)
                 } else if (tileIds.size == 13) {
-                    log("● 13张: $handStr | 等待摸牌...")
                     updateAdviceShantenOnly(tileIds)
-                } else if (tileIds.isNotEmpty()) {
-                    log("● 仅${tileIds.size}张: $handStr → 点击可手动修改")
-                } else {
-                    log("✖ 未检测到牌")
                 }
             }
             ACTION_UPDATE -> {
                 val handArray = intent.getIntArrayExtra(EXTRA_HAND)
                 if (handArray != null && handArray.size == 14) {
                     updateAdvice(handArray)
-                } else {
-                    val msg = intent.getStringExtra("status_msg")
-                    if (msg != null) {
-                        log(msg)
-                    }
                 }
             }
-            ACTION_UPDATE_STATUS -> {
-                val msg = intent.getStringExtra("status_msg")
-                if (msg != null) {
-                    log(msg)
-                }
-            }
+            ACTION_UPDATE_STATUS -> {}
         }
         return START_STICKY
     }
