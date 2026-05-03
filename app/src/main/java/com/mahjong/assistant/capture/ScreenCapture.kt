@@ -419,100 +419,103 @@ object TileMatcher {
     private fun fullImageScan(screenshot: Bitmap): List<MatchResult> {
         FLog.i("TileMatcher", "fullImageScan start")
         val srcMat = Mat()
-        Utils.bitmapToMat(screenshot, srcMat)  // RGBA
+        Utils.bitmapToMat(screenshot, srcMat)
         val gray = Mat()
         Imgproc.cvtColor(srcMat, gray, Imgproc.COLOR_RGBA2GRAY)
 
         val imgW = gray.cols(); val imgH = gray.rows()
 
-        val handTop = (imgH * 0.78).toInt()
-        val handH = minOf((imgH * 0.20).toInt(), imgH - handTop)
-        val roiRaw = Mat(gray, Rect(0, handTop, imgW, handH))
+        // 多区域策略: 副露时手牌位置上移, 从宽到窄逐区域尝试
+        val roiConfigs = listOf(
+            Pair((imgH * 0.65).toInt(), minOf((imgH * 0.32).toInt(), imgH - (imgH * 0.65).toInt())),
+            Pair((imgH * 0.55).toInt(), minOf((imgH * 0.42).toInt(), imgH - (imgH * 0.55).toInt())),
+            Pair((imgH * 0.78).toInt(), minOf((imgH * 0.20).toInt(), imgH - (imgH * 0.78).toInt()))
+        )
 
         val clahe = Imgproc.createCLAHE(3.0, Size(8.0, 8.0))
-        val roi = Mat()
-        clahe.apply(roiRaw, roi)
-        roiRaw.release()
-
-        FLog.i("TileMatcher", "ROI: handTop=$handTop handH=$handH imgW=$imgW imgH=$imgH")
-
         data class Hit(val tileId: Int, val x: Int, val score: Double)
 
-        val hits = mutableListOf<Hit>()
-        val allBestScores = mutableMapOf<Int, Double>()
+        for ((idx, cfg) in roiConfigs.withIndex()) {
+            val (handTop, handH) = cfg
+            if (handH < 30) continue
 
-        for ((tileId, template) in templates) {
-            if (tileId == 31) continue  // 白在全图模式走模板匹配(有CLAHE辅助)
+            val roiRaw = Mat(gray, Rect(0, handTop, imgW, handH))
+            val roi = Mat()
+            clahe.apply(roiRaw, roi)
+            roiRaw.release()
 
-            val th = getThreshold(tileId)
-            val tH = template.rows().toDouble()
-            val tW = template.cols().toDouble()
+            FLog.i("TileMatcher", "ROI#$idx: handTop=$handTop handH=$handH imgW=$imgW imgH=$imgH")
 
-            val targetScale = handH / tH
-            val perTemplateScales = DoubleArray(11) { i -> targetScale * (0.75 + i * 0.05) }
+            val hits = mutableListOf<Hit>()
+            val allBestScores = mutableMapOf<Int, Double>()
 
-            var bestScore = 0.0
-            var bestX = 0
+            for ((tileId, template) in templates) {
+                if (tileId == 31) continue
+                val th = getThreshold(tileId)
+                val tH = template.rows().toDouble()
+                val tW = template.cols().toDouble()
+                val targetScale = handH / tH
+                val perTemplateScales = DoubleArray(13) { i -> targetScale * (0.70 + i * 0.05) }
 
-            val templateEq = Mat()
-            clahe.apply(template, templateEq)
+                var bestScore = 0.0
+                var bestX = 0
+                val templateEq = Mat()
+                clahe.apply(template, templateEq)
 
-            for (scale in perTemplateScales) {
-                val sw = (tW * scale).toInt()
-                val sh = (tH * scale).toInt()
-                if (sw < 8 || sh < 8 || sw > roi.cols() || sh > roi.rows()) continue
-
-                val resized = Mat()
-                Imgproc.resize(templateEq, resized, Size(sw.toDouble(), sh.toDouble()))
-                val result = Mat()
-                Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
-
-                val mm = Core.minMaxLoc(result)
-                if (mm.maxVal > bestScore) {
-                    bestScore = mm.maxVal; bestX = mm.maxLoc.x.toInt()
+                for (scale in perTemplateScales) {
+                    val sw = (tW * scale).toInt()
+                    val sh = (tH * scale).toInt()
+                    if (sw < 8 || sh < 8 || sw > roi.cols() || sh > roi.rows()) continue
+                    val resized = Mat()
+                    Imgproc.resize(templateEq, resized, Size(sw.toDouble(), sh.toDouble()))
+                    val result = Mat()
+                    Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
+                    val mm = Core.minMaxLoc(result)
+                    if (mm.maxVal > bestScore) {
+                        bestScore = mm.maxVal; bestX = mm.maxLoc.x.toInt()
+                    }
+                    result.release(); resized.release()
                 }
-                result.release(); resized.release()
+                templateEq.release()
+                allBestScores[tileId] = bestScore
+                if (bestScore >= th) hits.add(Hit(tileId, bestX, bestScore))
             }
-            templateEq.release()
+            roi.release()
 
-            allBestScores[tileId] = bestScore
-            if (bestScore >= th) {
-                hits.add(Hit(tileId, bestX, bestScore))
+            val allScoresStr = (0..33).joinToString(" ") { tid ->
+                val s = allBestScores[tid] ?: 0.0
+                val mark = if (s >= getThreshold(tid)) "OK" else "--"
+                Tiles.name(tid) + ":" + "%.2f".format(s) + mark
             }
-        }  // end for templates
-        roi.release(); gray.release(); srcMat.release()
+            FLog.i("TileMatcher", "ROI#$idx ALL34: $allScoresStr")
+            android.util.Log.i(TAG, "ROI#$idx ALL34: $allScoresStr")
 
-        // 诊断日志
-        val allScoresStr = (0..33).joinToString(" ") { tid ->
-            val s = allBestScores[tid] ?: 0.0
-            val mark = if (s >= getThreshold(tid)) "OK" else "--"
-            "${Tiles.name(tid)}:${"%.2f".format(s)}$mark"
-        }
-        FLog.i("TileMatcher", "ALL34: $allScoresStr")
-        android.util.Log.i(TAG, "ALL34: $allScoresStr")
+            if (hits.isEmpty()) {
+                FLog.w("TileMatcher", "ROI#$idx 无结果, 尝试下一区域")
+                continue
+            }
 
-        if (hits.isEmpty()) {
-            FLog.w("TileMatcher", "全图0结果")
-            return emptyList()
-        }
+            val sorted = hits.sortedBy { it.x }
+            val filtered = mutableListOf<Hit>()
+            for (h in sorted) {
+                val dupIdx = filtered.indexOfFirst { kotlin.math.abs(it.x - h.x) < 15 }
+                if (dupIdx < 0) filtered.add(h)
+                else if (h.score > filtered[dupIdx].score) filtered[dupIdx] = h
+            }
+            val count = IntArray(34)
+            val final = mutableListOf<Hit>()
+            for (h in filtered) {
+                if (count[h.tileId] < 4) { final.add(h); count[h.tileId]++ }
+            }
 
-        // x排序 + 去重
-        val sorted = hits.sortedBy { it.x }
-        val filtered = mutableListOf<Hit>()
-        for (h in sorted) {
-            val idx = filtered.indexOfFirst { kotlin.math.abs(it.x - h.x) < 15 }
-            if (idx < 0) filtered.add(h)
-            else if (h.score > filtered[idx].score) filtered[idx] = h
-        }
-
-        val count = IntArray(34)
-        val final = mutableListOf<Hit>()
-        for (h in filtered) {
-            if (count[h.tileId] < 4) { final.add(h); count[h.tileId]++ }
+            gray.release(); srcMat.release()
+            FLog.i("TileMatcher", "fullImageScan done: ${final.size} final (ROI#$idx)")
+            return final.map { MatchResult(it.tileId, it.score, it.score < 0.55) }
         }
 
-        FLog.i("TileMatcher", "fullImageScan done: ${final.size} final")
-        return final.map { MatchResult(it.tileId, it.score, it.score < 0.55) }
+        gray.release(); srcMat.release()
+        FLog.w("TileMatcher", "全图0结果(所有ROI)")
+        return emptyList()
     }
 
     // ─── Canny区域匹配 (保留用于校准) ───
