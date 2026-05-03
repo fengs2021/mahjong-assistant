@@ -687,7 +687,7 @@ object TileMatcher {
             if (vertTmpl != null) {
                 val vH = vertTmpl.rows().toDouble(); val vW = vertTmpl.cols().toDouble()
                 val vertEq = Mat(); clahe.apply(vertTmpl, vertEq)
-                val vTargetScale = 112.0 / vH  // 以副露竖牌高度为基准
+                val vTargetScale = 1.0  // 副露模板尺寸即目标尺寸
                 for (i in 0 until 7) {
                     val scale = vTargetScale * (0.85 + i * 0.30 / 6)
                     val sw = (vW * scale).toInt(); val sh = (vH * scale).toInt()
@@ -704,11 +704,11 @@ object TileMatcher {
                 }
                 vertEq.release()
             }
-            // 横放副露匹配 (旋转90°)
+            // 横放副露匹配
             if (horzTmpl != null) {
                 val hH = horzTmpl.rows().toDouble(); val hW = horzTmpl.cols().toDouble()
                 val horzEq = Mat(); clahe.apply(horzTmpl, horzEq)
-                val hTargetScale = 90.0 / hH
+                val hTargetScale = 1.0  // 副露模板尺寸即目标尺寸
                 for (i in 0 until 7) {
                     val scale = hTargetScale * (0.85 + i * 0.30 / 6)
                     val sw = (hW * scale).toInt(); val sh = (hH * scale).toInt()
