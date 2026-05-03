@@ -44,6 +44,9 @@ class OverlayService : Service() {
 
     private var currentHand = IntArray(0)
 
+    // 配色 (createOverlay 中使用)
+    private val colorPanel = 0x40000000.toInt()  // 黑色25%
+
     // 自动截图
     private val autoHandler = Handler(Looper.getMainLooper())
     private var autoRunnable: Runnable? = null
@@ -173,7 +176,6 @@ class OverlayService : Service() {
 
         // 配色 (借鉴 majsoul-tiles-android)
         val colorBg = 0xD9185018.toInt()       // 深绿85%
-        val colorPanel = 0x40000000.toInt()     // 黑色25%
         val colorAccent = 0xFF5CFF5C.toInt()    // 亮绿
         val colorText = 0xFFD0F0D0.toInt()      // 淡绿
         val colorSub = 0xFF80B080.toInt()       // 中绿
