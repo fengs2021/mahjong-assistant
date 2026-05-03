@@ -335,11 +335,29 @@ object TileMatcher {
             }
         }
 
-        // 摸牌 (仅当该位置有牌时检测)
-        val dFaceRight = drawnSlot.faceLeft + drawnSlot.faceW
-        val dFaceBottom = drawnSlot.faceTop + drawnSlot.faceH
+        // 摸牌: 副露时手牌减少, 摸牌位置左移
+        // 动态计算摸牌位置: 最后一张手牌右边 + 间距(43px)
+        val handHighConf = results.count { !it.needsCheck }
+        val drawnSlotDynamic = if (handHighConf in 1..12) {
+            val lastSlotIdx = handHighConf - 1
+            val lastSlot = mainHandSlots[lastSlotIdx]
+            val drawnFaceLeft = lastSlot.faceLeft + lastSlot.faceW + 43  // 间距同13张时
+            TileSlot(
+                slotLeft = drawnFaceLeft - 5,
+                slotTop = drawnSlot.slotTop,
+                faceLeft = drawnFaceLeft,
+                faceTop = drawnSlot.faceTop,
+                faceW = drawnSlot.faceW,
+                faceH = drawnSlot.faceH
+            )
+        } else {
+            drawnSlot  // 13张或无牌时用默认坐标
+        }
+
+        val dFaceRight = drawnSlotDynamic.faceLeft + drawnSlotDynamic.faceW
+        val dFaceBottom = drawnSlotDynamic.faceTop + drawnSlotDynamic.faceH
         if (dFaceRight <= gray.cols() && dFaceBottom <= gray.rows()) {
-            val tileMat = Mat(gray, Rect(drawnSlot.faceLeft, drawnSlot.faceTop, drawnSlot.faceW, drawnSlot.faceH))
+            val tileMat = Mat(gray, Rect(drawnSlotDynamic.faceLeft, drawnSlotDynamic.faceTop, drawnSlotDynamic.faceW, drawnSlotDynamic.faceH))
             // 检查该位置是否有牌: 灰度均值>80才算有牌(排除纯桌面背景)
             val meanCheck = MatOfDouble()
             Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
