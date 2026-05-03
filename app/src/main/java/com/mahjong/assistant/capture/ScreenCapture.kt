@@ -274,11 +274,12 @@ object TileMatcher {
         // 策略: 精准定位 → 全图扫描兜底
         val results = if (usePositionMode) {
             val posResults = recognizeByPosition(screenshot)
-            if (posResults.size >= 13) {
+            // 副露时手牌自然<13张, 只要≥1张高置信(≥0.55)就使用定位结果
+            val highConf = posResults.count { !it.needsCheck }
+            if (highConf >= 1) {
                 posResults
             } else {
-                // 不足13张 → 可能坐标不匹配, 回退全图扫描
-                FLog.w("TileMatcher", "精准定位仅${posResults.size}张, 回退全图扫描")
+                FLog.w("TileMatcher", "精准定位0高置信(${posResults.size}张低分), 回退全图")
                 fullImageScan(screenshot)
             }
         } else {
@@ -454,7 +455,8 @@ object TileMatcher {
                 val th = getThreshold(tileId)
                 val tH = template.rows().toDouble()
                 val tW = template.cols().toDouble()
-                val targetScale = handH / tH
+                // 牌面高度不可能超过200px, cap避免副露高ROI时targetScale过大
+                val targetScale = minOf(handH, 200.0) / tH
                 val perTemplateScales = DoubleArray(13) { i -> targetScale * (0.70 + i * 0.05) }
 
                 var bestScore = 0.0
