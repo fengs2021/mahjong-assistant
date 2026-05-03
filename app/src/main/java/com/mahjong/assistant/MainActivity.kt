@@ -1,18 +1,17 @@
 package com.mahjong.assistant
 
 import android.app.Activity
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.mahjong.assistant.capture.ScreenCaptureService
 import com.mahjong.assistant.capture.TileMatcher
 import com.mahjong.assistant.overlay.OverlayService
 
@@ -20,17 +19,13 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val REQUEST_OVERLAY = 1001
-        const val REQUEST_PROJECTION = 2001
         const val REQUEST_MANUAL = 1003
-        private const val PREFS = "mahjong_prefs"
-        private const val KEY_AUTHORIZED = "projection_authorized"
     }
 
     private lateinit var statusText: TextView
     private lateinit var overlayBtn: Button
-    private lateinit var projectionBtn: Button
+    private lateinit var a11yBtn: Button
     private lateinit var refreshBtn: Button
-    private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,23 +45,22 @@ class MainActivity : AppCompatActivity() {
 
         if (hasOverlay) {
             startOverlayService()
-            val hasCode = com.mahjong.assistant.overlay.OverlayService.captureResultCode != -1
-            statusText.text = if (hasCode) "截屏已授权 | ${TileMatcher.getDiagnostic()}"
-                             else "截屏权限需授权 | 点下方按钮"
+            val a11yOk = ScreenCaptureService.isEnabled(this)
+            statusText.text = if (a11yOk) "✓ 无障碍已开启 | ${TileMatcher.getDiagnostic()}"
+                             else "⚠ 需开启无障碍服务 → 点下方按钮"
         } else {
             statusText.text = "⚠ 需要悬浮窗权限 → 点下方按钮授权"
         }
 
-        // 根据权限状态动态显示/隐藏按钮
-        refreshButtons(overlayBtn, projectionBtn, refreshBtn)
+        refreshButtons(overlayBtn, a11yBtn, refreshBtn)
     }
 
-    private fun refreshButtons(overlayBtn: Button? = null, projectionBtn: Button? = null, refreshBtn: Button? = null) {
+    private fun refreshButtons(overlayBtn: Button? = null, a11yBtn: Button? = null, refreshBtn: Button? = null) {
         val hasOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
-        val hasProjection = prefs.getBoolean(KEY_AUTHORIZED, false)
+        val hasA11y = ScreenCaptureService.isEnabled(this)
         overlayBtn?.visibility = if (hasOverlay) View.GONE else View.VISIBLE
-        projectionBtn?.visibility = if (!hasOverlay || hasProjection) View.GONE else View.VISIBLE
-        refreshBtn?.visibility = if (!hasOverlay || !hasProjection) View.GONE else View.VISIBLE
+        a11yBtn?.visibility = if (!hasOverlay || hasA11y) View.GONE else View.VISIBLE
+        refreshBtn?.visibility = if (!hasOverlay || !hasA11y) View.GONE else View.VISIBLE
     }
 
     private fun createLayout(): LinearLayout {
@@ -99,9 +93,8 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            projectionBtn = addButton(root, "📸 授权截屏") {
-                val pm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-                startActivityForResult(pm.createScreenCaptureIntent(), REQUEST_PROJECTION)
+            a11yBtn = addButton(root, "♿ 开启无障碍服务") {
+                ScreenCaptureService.openSettings(this)
             }
 
             addButton(root, "✏ 手动输入手牌") {
@@ -110,10 +103,8 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            refreshBtn = addButton(root, "📸 刷新截图授权") {
-                prefs.edit().remove(KEY_AUTHORIZED).apply()
-                val pm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-                startActivityForResult(pm.createScreenCaptureIntent(), REQUEST_PROJECTION)
+            refreshBtn = addButton(root, "♿ 检查无障碍") {
+                ScreenCaptureService.openSettings(this)
             }
 
             Button(this).apply {
@@ -132,7 +123,7 @@ class MainActivity : AppCompatActivity() {
             }.also { root.addView(it) }
 
             // 根据权限状态动态显隐
-            refreshButtons(overlayBtn, projectionBtn, refreshBtn)
+            refreshButtons(overlayBtn, a11yBtn, refreshBtn)
         }
     }
 
@@ -176,27 +167,11 @@ class MainActivity : AppCompatActivity() {
                 startOverlayService()
                 val hasOverlay = Settings.canDrawOverlays(this)
                 statusText.text = if (hasOverlay) {
-                    "✓ 悬浮窗已授权 | 请授权截屏权限"
+                    "✓ 悬浮窗已授权 | 请开启无障碍服务"
                 } else {
                     "⚠ 悬浮窗权限被拒绝"
                 }
-                refreshButtons(overlayBtn, projectionBtn, refreshBtn)
-            }
-
-            REQUEST_PROJECTION -> {
-                if (resultCode == RESULT_OK && data != null) {
-                    statusText.text = "截屏已授权"
-                    prefs.edit().putBoolean(KEY_AUTHORIZED, true).apply()
-                    val intent = Intent(this, OverlayService::class.java).apply {
-                        action = OverlayService.ACTION_INIT_CAPTURE
-                        putExtra(OverlayService.EXTRA_RESULT_CODE, resultCode)
-                        putExtra(OverlayService.EXTRA_DATA, data)
-                    }
-                    startService(intent)
-                } else {
-                    statusText.text = "⚠ 截屏权限被拒绝, 只能使用手动输入"
-                }
-                refreshButtons(overlayBtn, projectionBtn, refreshBtn)
+                refreshButtons(overlayBtn, a11yBtn, refreshBtn)
             }
 
             REQUEST_MANUAL -> {

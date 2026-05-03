@@ -5,7 +5,6 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- 保持屏幕常亮 -->
@@ -57,18 +56,18 @@
                 android:value="麻将游戏辅助悬浮窗" />
         </service>
 
-        <!-- 长期截屏服务 (一次授权, 持续持有) -->
+        <!-- 无障碍截图服务 (替代 MediaProjection, 兼容Android15) -->
         <service
-            android:name=".capture.CaptureService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
-
-        <!-- 截屏权限 Activity -->
-        <activity
-            android:name=".capture.CaptureActivity"
-            android:exported="false"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar"
-            android:excludeFromRecents="true" />
+            android:name=".capture.ScreenCaptureService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
 
         <!-- 手动输入 Activity -->
         <activity
@@ -84,8 +83,6 @@
         <activity
             android:name=".CalibrateActivity"
             android:exported="false" />
-
-
 
     </application>
 </manifest>

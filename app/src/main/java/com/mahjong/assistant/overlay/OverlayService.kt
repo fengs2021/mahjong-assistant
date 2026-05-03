@@ -13,6 +13,7 @@ import android.widget.*
 import androidx.core.app.NotificationCompat
 import com.mahjong.assistant.R
 import com.mahjong.assistant.ReviewActivity
+import com.mahjong.assistant.capture.ScreenCaptureService
 import com.mahjong.assistant.capture.TileMatcher
 import com.mahjong.assistant.engine.Efficiency
 import com.mahjong.assistant.engine.Shanten
@@ -466,20 +467,18 @@ class OverlayService : Service() {
     }
 
     private fun onCapture() {
-        // Android 15: Service 不能调用 getMediaProjection (需要 mediaProjection FGS类型,
-        // 但 startForeground 不接受该类型除非持有 CAPTURE_VIDEO_OUTPUT 签名级权限)
-        // CaptureActivity 作为 Activity 不受此限制 — 全部截图逻辑已移至 CaptureActivity
-        FLog.i("OverlaySvc", "onCapture → 启动CaptureActivity")
-        log("● 截图 → CaptureActivity")
-
-        try {
-            val intent = Intent(this, com.mahjong.assistant.capture.CaptureActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intent)
-        } catch (e: Exception) {
-            log("✖ 启动CaptureActivity失败: ${e.message?.take(40)}")
-            FLog.e("OverlaySvc", "启动CaptureActivity失败", e)
+        // Android 15: 截图通过 AccessibilityService.takeScreenshot() (API 34+)
+        // 不需要 MediaProjection, 绕过 FGS 限制
+        val svc = ScreenCaptureService.instance
+        if (svc != null) {
+            FLog.i("OverlaySvc", "onCapture → AccessibilityService")
+            log("● 截图 → 无障碍服务")
+            svc.captureAndRecognize()
+        } else if (!ScreenCaptureService.isEnabled(this)) {
+            log("● 无障碍服务未开启 → 跳转设置")
+            ScreenCaptureService.openSettings(this)
+        } else {
+            log("● 无障碍已开启但服务未连接, 请重新打开悬浮窗")
         }
     }
 
