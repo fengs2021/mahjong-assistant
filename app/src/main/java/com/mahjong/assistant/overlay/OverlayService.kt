@@ -3,14 +3,7 @@ package com.mahjong.assistant.overlay
 import android.app.*
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.graphics.PixelFormat
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
-import android.media.Image
-import android.media.ImageReader
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -66,6 +59,7 @@ class OverlayService : Service() {
         const val ACTION_UPDATE = "com.mahjong.assistant.UPDATE"
         const val ACTION_UPDATE_STATUS = "com.mahjong.assistant.UPDATE_STATUS"
         const val ACTION_INIT_CAPTURE = "com.mahjong.assistant.INIT_CAPTURE"
+        const val ACTION_CAPTURE_DONE = "com.mahjong.assistant.CAPTURE_DONE"
         const val EXTRA_HAND = "hand_tiles"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_DATA = "data"
@@ -75,13 +69,8 @@ class OverlayService : Service() {
         @JvmStatic var captureResultData: Intent? = null
     }
 
-    // 截图相关
-    private var projection: MediaProjection? = null
+    // 截图相关 (已移至 CaptureActivity; 仅保留授权凭据)
     private var screenDpi = 0
-    private var isCapturing = false
-    private var captureScheduled = false  // 防止重复调度截图
-    private var pendingCapture = false  // 授权后自动截图
-    private var authPollCount = 0
     private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
@@ -442,202 +431,6 @@ class OverlayService : Service() {
         }, 4000)
     }
 
-    private fun getScreenSize(): Pair<Int, Int> {
-        return if (Build.VERSION.SDK_INT >= 30) {
-            val bounds = windowManager.currentWindowMetrics.bounds
-            Pair(bounds.width(), bounds.height())
-        } else {
-            val point = android.graphics.Point()
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay.getRealSize(point)
-            Pair(point.x, point.y)
-        }
-    }
-
-    private fun onCapture() {
-        if (isCapturing) {
-            log("⏳ 正在截图中,跳过")
-            return
-        }
-
-        FLog.i("OverlaySvc", "onCapture EXEC: code=$captureResultCode data=${captureResultData != null} projection=${projection != null}")
-        log("onCapture: code=${captureResultCode} data=${captureResultData != null}")
-
-        if (captureResultCode == CODE_UNSET || captureResultData == null) {
-            log("● 无授权 → 启动CaptureActivity")
-            pendingCapture = true
-            authPollCount = 0
-            try {
-                val intent = Intent(this, com.mahjong.assistant.capture.CaptureActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                startActivity(intent)
-                log("● 已启动授权Activity, 开始轮询...")
-                pollForAuth()
-            } catch (e: Exception) {
-                log("✖ 授权启动失败: ${e.message?.take(40)}")
-                pendingCapture = false
-            }
-            return
-        }
-
-        isCapturing = true
-        val (sw, sh) = getScreenSize()
-        FLog.i("OverlaySvc", "开始截图 ${sw}x${sh}")
-        log("● 开始截图 ${sw}x${sh}")
-
-        try {
-            overlayView.visibility = View.INVISIBLE
-
-            if (projection == null) {
-                FLog.i("OverlaySvc", "创建MediaProjection...")
-                log("● 创建MediaProjection...")
-                val pm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                try {
-                    projection = pm.getMediaProjection(captureResultCode, captureResultData!!)
-                    FLog.i("OverlaySvc", "MediaProjection创建完成: ${projection != null}")
-                    log("● MediaProjection OK")
-                } catch (e: Exception) {
-                    FLog.e("OverlaySvc", "getMediaProjection崩溃", e)
-                    log("✖ MediaProjection创建失败: ${e.message?.take(40)}")
-                    isCapturing = false
-                    overlayView.visibility = View.VISIBLE
-                    return
-                }
-            }
-
-            projection!!.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() {
-                    projection = null
-                    log("✖ MediaProjection.onStop")
-                }
-            }, mainHandler)
-
-            val reader = ImageReader.newInstance(sw, sh, android.graphics.PixelFormat.RGBA_8888, 1)
-            log("● ImageReader ready")
-
-            // 用可变容器持有vd (lambda定义在vd之前, 需延迟绑定)
-            var vdRef: VirtualDisplay? = null
-
-            reader.setOnImageAvailableListener({ r ->
-                if (!isCapturing) return@setOnImageAvailableListener
-                isCapturing = false
-                FLog.i("OverlaySvc", "image available")
-                log("● image available")
-
-                try {
-                    val img: Image? = r.acquireLatestImage()
-                    if (img != null) {
-                        val plane = img.planes[0]
-                        val buffer = plane.buffer
-                        val pixelStride = plane.pixelStride
-                        val rowStride = plane.rowStride
-                        val rowPadding = rowStride - r.width * pixelStride
-                        FLog.i("OverlaySvc", "plane: w=${r.width} h=${r.height} pStride=$pixelStride rowStride=$rowStride padding=$rowPadding")
-
-                        val bitmap = run {
-                            // 统一逐行复制 (RGBA buffer → ARGB bitmap)
-                            val bmp = Bitmap.createBitmap(r.width, r.height, Bitmap.Config.ARGB_8888)
-                            val pixels = IntArray(r.width)
-                            val byteBuf = ByteArray(rowStride)
-                            buffer.rewind()
-                            for (y in 0 until r.height) {
-                                buffer.get(byteBuf, 0, minOf(rowStride, buffer.remaining()))
-                                for (x in 0 until r.width) {
-                                    val off = x * pixelStride
-                                    pixels[x] = ((byteBuf[off+3].toInt() and 0xFF) shl 24) or
-                                        ((byteBuf[off].toInt() and 0xFF) shl 16) or
-                                        ((byteBuf[off+1].toInt() and 0xFF) shl 8) or
-                                        (byteBuf[off+2].toInt() and 0xFF)
-                                }
-                                bmp.setPixels(pixels, 0, r.width, 0, y, r.width, 1)
-                            }
-                            bmp
-                        }
-                        img.close()
-                        FLog.i("OverlaySvc", "bitmap ${bitmap.width}x${bitmap.height}")
-                        log("● bitmap ${bitmap.width}x${bitmap.height}")
-                        processScreenshot(bitmap)
-                        cleanup(r, vdRef)  // 识别完成后恢复悬浮窗
-                    } else {
-                        FLog.w("OverlaySvc", "截屏无数据")
-                        log("✖ 截屏无数据")
-                        cleanup(r, null)
-                    }
-                } catch (e: Exception) {
-                    FLog.e("OverlaySvc", "bitmap异常", e)
-                    log("✖ bitmap异常: ${e.message?.take(40)}")
-                    cleanup(r, null)
-                }
-            }, mainHandler)
-
-            val vd = projection!!.createVirtualDisplay(
-                "mahjong-ss", sw, sh, screenDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                reader.surface, null, null
-            )
-            vdRef = vd
-            log("● VirtualDisplay created")
-
-            mainHandler.postDelayed({
-                if (isCapturing) {
-                    isCapturing = false
-                    log("✖ 截屏超时3s")
-                    cleanup(reader, vd)
-                }
-            }, 3000)
-
-        } catch (e: SecurityException) {
-            isCapturing = false
-            captureScheduled = false
-            overlayView.visibility = View.VISIBLE
-            FLog.e("OverlaySvc", "SecurityException", e)
-            log("✖ SecurityException: 权限失效")
-        } catch (e: Exception) {
-            isCapturing = false
-            captureScheduled = false
-            overlayView.visibility = View.VISIBLE
-            FLog.e("OverlaySvc", "截屏异常", e)
-            log("✖ 截屏异常: ${e.message?.take(40)}")
-        }
-    }
-
-    private fun processScreenshot(bitmap: Bitmap) {
-        FLog.i("OverlaySvc", "processScreenshot start")
-        log("● 开始识别...")
-        val (results, _) = TileMatcher.recognize(bitmap)
-        FLog.i("OverlaySvc", "recognize done: ${results.size} tiles")
-
-        val ssPath = saveScreenshotFile(bitmap)
-        bitmap.recycle()
-
-        log(TileMatcher.lastLog)
-
-        val tileIds = results.map { it.tileId }.toIntArray()
-        val confidences = results.map { it.confidence }.toDoubleArray()
-        val handStr = if (tileIds.isNotEmpty()) Tiles.toDisplayString(tileIds) else "—"
-
-        // 存储结果供点击编辑
-        lastTileIds = tileIds
-        lastConfidences = confidences
-        lastScreenshotPath = ssPath
-
-        if (results.size >= 14) {
-            val uncertain = results.count { it.needsCheck }
-            log("● 识别${results.size}张: $handStr" +
-                if (uncertain > 0) " | ⚠${uncertain}张待确认" else " ✓")
-            updateAdvice(tileIds)
-        } else if (results.size == 13) {
-            log("● 13张: $handStr | 等待摸牌...")
-            updateAdviceShantenOnly(tileIds)
-        } else if (results.isNotEmpty()) {
-            log("● 仅${results.size}张: $handStr → 点击可手动修改")
-        } else {
-            log("✖ 未检测到牌")
-        }
-        // 不再自动跳转ReviewActivity; 点击建议区可手动编辑
-    }
-
     /** 13张手牌: 向听数 + 有效进张 */
     private fun updateAdviceShantenOnly(hand13: IntArray) {
         if (hand13.size != 13) return
@@ -657,7 +450,6 @@ class OverlayService : Service() {
 
         if (ukeireTiles.isNotEmpty()) {
             recommendLabel.text = "进张: ${ukeireTiles.size}种${totalUkeire}枚"
-            // 列出进张牌种
             altContainer.removeAllViews()
             val names = ukeireTiles.take(10).joinToString(" ") {
                 "${Tiles.name(it.first)}×${it.second}"
@@ -688,6 +480,24 @@ class OverlayService : Service() {
         } catch (_: Exception) {}
     }
 
+    private fun onCapture() {
+        // Android 15: Service 不能调用 getMediaProjection (需要 mediaProjection FGS类型,
+        // 但 startForeground 不接受该类型除非持有 CAPTURE_VIDEO_OUTPUT 签名级权限)
+        // CaptureActivity 作为 Activity 不受此限制 — 全部截图逻辑已移至 CaptureActivity
+        FLog.i("OverlaySvc", "onCapture → 启动CaptureActivity")
+        log("● 截图 → CaptureActivity")
+
+        try {
+            val intent = Intent(this, com.mahjong.assistant.capture.CaptureActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            log("✖ 启动CaptureActivity失败: ${e.message?.take(40)}")
+            FLog.e("OverlaySvc", "启动CaptureActivity失败", e)
+        }
+    }
+
     /** 点击建议区 → 打开ReviewActivity手动编辑 */
     private fun openReviewForEdit() {
         if (lastTileIds.isEmpty()) {
@@ -695,24 +505,6 @@ class OverlayService : Service() {
             return
         }
         launchReview(lastTileIds, lastConfidences, lastScreenshotPath)
-    }
-
-    private fun saveScreenshotFile(bitmap: Bitmap): String? {
-        return try {
-            val dir = File(cacheDir, "screenshots")
-            if (!dir.exists()) dir.mkdirs()
-            val file = File(dir, "capture_${System.currentTimeMillis()}.jpg")
-            val fos = java.io.FileOutputStream(file)
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 70, fos)
-            fos.close()
-            file.absolutePath
-        } catch (_: Exception) { null }
-    }
-
-    private fun cleanup(reader: ImageReader?, vd: VirtualDisplay?) {
-        try { vd?.release() } catch (_: Exception) {}
-        try { reader?.close() } catch (_: Exception) {}
-        overlayView.visibility = View.VISIBLE
     }
 
     private fun runOnUiThread(action: () -> Unit) {
@@ -724,22 +516,6 @@ class OverlayService : Service() {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         startActivity(intent)
-    }
-
-    /** 轮询等待CaptureActivity传回授权 (fallback) */
-    private fun pollForAuth() {
-        authPollCount++
-        if (captureResultCode != CODE_UNSET && captureResultData != null) {
-            pendingCapture = false
-            log("● pollForAuth#${authPollCount}: 授权已就绪, 2.5s后截图")
-            scheduleDelayedCapture("pollForAuth#${authPollCount}")
-            return
-        }
-        if (authPollCount > 120) {
-            log("● 等待授权中... (已${authPollCount}轮, 将在授权后自动截图)")
-            return
-        }
-        mainHandler.postDelayed({ pollForAuth() }, 500)
     }
 
     // ─── Service 生命周期 ───
@@ -758,16 +534,34 @@ class OverlayService : Service() {
                     @Suppress("DEPRECATION")
                     captureResultData = intent.getParcelableExtra(EXTRA_DATA)
                 }
-                log("INIT_CAPTURE: code=$captureResultCode data=${captureResultData != null} pending=$pendingCapture poll=$authPollCount")
-
-                // 只要有有效凭证, 直接触发延迟截图 (不依赖 pendingCapture, 因为Service可能被重建过)
-                if (captureResultCode != CODE_UNSET && captureResultData != null) {
-                    pendingCapture = false
-                    authPollCount = 0
-                    log("● 授权有效, 2.5s后自动截图")
-                    scheduleDelayedCapture("INIT_CAPTURE授权")
-                }
+                log("授权已保存 (供CaptureActivity复用)")
                 return START_STICKY
+            }
+            ACTION_CAPTURE_DONE -> {
+                // CaptureActivity 截图+识别完成后发来的结果
+                val tileIds = intent.getIntArrayExtra("tile_ids") ?: intArrayOf()
+                val confidences = intent.getDoubleArrayExtra("confidences") ?: doubleArrayOf()
+                val detectLog = intent.getStringExtra("log") ?: TileMatcher.lastLog
+                val ssPath = intent.getStringExtra("screenshot_path")
+
+                lastTileIds = tileIds
+                lastConfidences = confidences
+                lastScreenshotPath = ssPath
+
+                log(detectLog)
+                val handStr = if (tileIds.isNotEmpty()) Tiles.toDisplayString(tileIds) else "—"
+
+                if (tileIds.size >= 14) {
+                    log("● 识别${tileIds.size}张: $handStr")
+                    updateAdvice(tileIds)
+                } else if (tileIds.size == 13) {
+                    log("● 13张: $handStr | 等待摸牌...")
+                    updateAdviceShantenOnly(tileIds)
+                } else if (tileIds.isNotEmpty()) {
+                    log("● 仅${tileIds.size}张: $handStr → 点击可手动修改")
+                } else {
+                    log("✖ 未检测到牌")
+                }
             }
             ACTION_UPDATE -> {
                 val handArray = intent.getIntArrayExtra(EXTRA_HAND)
