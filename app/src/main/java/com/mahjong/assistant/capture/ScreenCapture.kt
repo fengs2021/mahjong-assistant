@@ -75,6 +75,9 @@ object TileMatcher {
 
     // 模板缓存
     private val templates = mutableMapOf<Int, Mat>()
+    // 副露专用模板 (从截图中采集, 宽高比~1:1 vs 手牌98:143)
+    // Pair(竖放模板, 横放模板) — 横放可为null
+    private val meldTemplates = mutableMapOf<Int, Pair<Mat?, Mat?>>()
     @Volatile private var templatesLoaded = false
     private var initDiagnostic = "未初始化"
     private var opencvReady = false
@@ -123,9 +126,10 @@ object TileMatcher {
             if (!templatesLoaded) {
                 templatesLoaded = loadCalibratedTemplates(context)
             }
+            val meldCount = loadMeldTemplates(context)
 
             initDiagnostic = if (templatesLoaded) {
-                "就绪: ${templates.size}/34 模板 OpenCV=${opencvReady} 精准定位"
+                "就绪: ${templates.size}/34 模板 + ${meldCount}副露 OpenCV=${opencvReady}"
             } else {
                 "模板为空"
             }
@@ -205,6 +209,55 @@ object TileMatcher {
         }
         android.util.Log.i(TAG, "从内部存储加载 $loaded 校准模板")
         return templates.isNotEmpty()
+    }
+
+    // ─── 副露模板加载 (从截图中采集, 宽高比~1:1) ───
+    private const val MELD_TILES_DIR = "meld_tiles"
+
+    private fun loadMeldTemplates(context: Context): Int {
+        return try {
+            val assets = context.assets
+            val files = assets.list(MELD_TILES_DIR) ?: return 0
+            var loaded = 0
+            for (filename in files) {
+                val nameWithoutExt = filename.removeSuffix(".png")
+                // 解析: "八索_竖" → name="八索" direction=竖
+                val isVertical = nameWithoutExt.endsWith("_竖") || nameWithoutExt.endsWith("_竖2")
+                val isHorizontal = nameWithoutExt.endsWith("_横")
+                if (!isVertical && !isHorizontal) continue
+                val tileName = if (isVertical) {
+                    nameWithoutExt.removeSuffix("_竖").removeSuffix("_竖2")
+                } else {
+                    nameWithoutExt.removeSuffix("_横")
+                }
+                val tileId = nameToId[tileName] ?: continue
+                try {
+                    val inputStream = assets.open("$MELD_TILES_DIR/$filename")
+                    val bitmap = BitmapFactory.decodeStream(inputStream)
+                    inputStream.close()
+                    if (bitmap != null) {
+                        val mat = Mat()
+                        Utils.bitmapToMat(bitmap, mat)
+                        Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
+                        val existing = meldTemplates[tileId]
+                        if (isVertical) {
+                            meldTemplates[tileId] = Pair(mat, existing?.second)
+                        } else {
+                            meldTemplates[tileId] = Pair(existing?.first, mat)
+                        }
+                        bitmap.recycle()
+                        loaded++
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w(TAG, "加载副露模板失败: $filename")
+                }
+            }
+            android.util.Log.i(TAG, "副露模板: $loaded 张 (${meldTemplates.size} 种)")
+            loaded
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "副露模板加载异常: ${e.message}")
+            0
+        }
     }
 
     // ─── 手动校准 ───
@@ -625,6 +678,53 @@ object TileMatcher {
                 result.release(); resized.release()
             }
             templateEq.release()
+        }
+
+        // ─── 副露专用模板匹配 (宽高比~1:1, 从截图中采集) ───
+        for ((tileId, meldPair) in meldTemplates) {
+            val (vertTmpl, horzTmpl) = meldPair
+            // 竖放副露匹配
+            if (vertTmpl != null) {
+                val vH = vertTmpl.rows().toDouble(); val vW = vertTmpl.cols().toDouble()
+                val vertEq = Mat(); clahe.apply(vertTmpl, vertEq)
+                val vTargetScale = 112.0 / vH  // 以副露竖牌高度为基准
+                for (i in 0 until 7) {
+                    val scale = vTargetScale * (0.85 + i * 0.30 / 6)
+                    val sw = (vW * scale).toInt(); val sh = (vH * scale).toInt()
+                    if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
+                    val resized = Mat()
+                    Imgproc.resize(vertEq, resized, Size(sw.toDouble(), sh.toDouble()))
+                    val result = Mat()
+                    Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
+                    val mm = Core.minMaxLoc(result)
+                    if (mm.maxVal >= meldThreshold) {
+                        hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), mm.maxVal))
+                    }
+                    result.release(); resized.release()
+                }
+                vertEq.release()
+            }
+            // 横放副露匹配 (旋转90°)
+            if (horzTmpl != null) {
+                val hH = horzTmpl.rows().toDouble(); val hW = horzTmpl.cols().toDouble()
+                val horzEq = Mat(); clahe.apply(horzTmpl, horzEq)
+                val hTargetScale = 90.0 / hH
+                for (i in 0 until 7) {
+                    val scale = hTargetScale * (0.85 + i * 0.30 / 6)
+                    val sw = (hW * scale).toInt(); val sh = (hH * scale).toInt()
+                    if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
+                    val resized = Mat()
+                    Imgproc.resize(horzEq, resized, Size(sw.toDouble(), sh.toDouble()))
+                    val result = Mat()
+                    Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
+                    val mm = Core.minMaxLoc(result)
+                    if (mm.maxVal >= meldThreshold) {
+                        hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), mm.maxVal))
+                    }
+                    result.release(); resized.release()
+                }
+                horzEq.release()
+            }
         }
 
         roi.release(); gray.release()
