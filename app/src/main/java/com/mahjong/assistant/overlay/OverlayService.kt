@@ -469,6 +469,10 @@ class OverlayService : Service() {
     private fun onCapture() {
         // Android 15: 截图通过 AccessibilityService.takeScreenshot() (API 34+)
         // 不需要 MediaProjection, 绕过 FGS 限制
+        if (Build.VERSION.SDK_INT < 34) {
+            log("✖ 需要 Android 14+")
+            return
+        }
         val svc = ScreenCaptureService.instance
         if (svc != null) {
             FLog.i("OverlaySvc", "onCapture → AccessibilityService")

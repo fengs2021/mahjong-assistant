@@ -1,15 +1,14 @@
 package com.mahjong.assistant.capture
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.ScreenCaptureCallback
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.provider.Settings
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
+import androidx.annotation.RequiresApi
 import com.mahjong.assistant.overlay.OverlayService
 import com.mahjong.assistant.util.FLog
 import java.io.File
@@ -26,9 +25,7 @@ class ScreenCaptureService : AccessibilityService() {
 
     companion object {
         @Volatile var instance: ScreenCaptureService? = null
-        private val mainHandler = Handler(Looper.getMainLooper())
 
-        /** 检查无障碍服务是否已开启 */
         fun isEnabled(context: Context): Boolean {
             val services = Settings.Secure.getString(
                 context.contentResolver,
@@ -67,12 +64,8 @@ class ScreenCaptureService : AccessibilityService() {
     /**
      * 执行截图 → 识别 → 发送结果到 OverlayService
      */
+    @RequiresApi(34)
     fun captureAndRecognize() {
-        if (Build.VERSION.SDK_INT < 34) {
-            FLog.w("A11ySvc", "takeScreenshot requires API 34+")
-            return
-        }
-
         FLog.i("A11ySvc", "captureAndRecognize start")
 
         val latch = CountDownLatch(1)
@@ -80,10 +73,10 @@ class ScreenCaptureService : AccessibilityService() {
 
         try {
             takeScreenshot(
-                displayId,
-                mainHandler,
-                object : ScreenCaptureCallback {
-                    override fun onSuccess(result: ScreenCaptureResult) {
+                Display.DEFAULT_DISPLAY,
+                mainExecutor,
+                object : AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
                         FLog.i("A11ySvc", "takeScreenshot OK")
                         try {
                             bitmap = Bitmap.wrapHardwareBuffer(
