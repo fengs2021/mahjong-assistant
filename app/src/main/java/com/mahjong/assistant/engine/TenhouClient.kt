@@ -31,6 +31,9 @@ object TenhouClient {
     /** OkHttp 代理客户端 (用于 WebView 请求拦截) */
     private var proxyClient: OkHttpClient? = null
 
+    const val PROXY_HOST = "127.0.0.1"
+    const val PROXY_PORT = 7890
+
     /** 天凤推荐结果 */
     data class Advice(
         val bestDiscard: Int,          // 推荐切的牌ID
@@ -78,11 +81,6 @@ object TenhouClient {
 
         isReady = true
         FLog.i("Tenhou", "WebView ready, proxy=$proxyHost:$proxyPort")
-    }
-
-    companion object {
-        const val PROXY_HOST = "127.0.0.1"
-        const val PROXY_PORT = 7890
     }
 
     fun release() {
