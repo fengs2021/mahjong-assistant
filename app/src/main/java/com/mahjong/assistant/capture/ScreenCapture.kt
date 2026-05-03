@@ -620,10 +620,10 @@ object TileMatcher {
 
         val imgW = gray.cols(); val imgH = gray.rows()
 
-        // 副露区域: 底部右侧, 与手牌同高度
-        // 手牌 y=1106~1249 (h=143), 副露取同高+余量
-        val meldY = 1086           // 手牌上边缘-20
-        val meldH = minOf(183, imgH - meldY)  // 手牌高+40, 不超屏幕底
+        // 副露区域: 底部右侧, 与手牌同高度 (高度翻倍覆盖杠牌)
+        // 手牌 y=1106~1249 (h=143), 副露上扩到y=1000
+        val meldY = 1000
+        val meldH = minOf(264, imgH - meldY)
         val meldX = 1150           // 手牌右侧+副露条向左延伸
         val meldW = imgW - meldX
 
