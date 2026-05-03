@@ -12,9 +12,11 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import androidx.core.app.NotificationCompat
+import com.mahjong.assistant.ReviewActivity
 import com.mahjong.assistant.engine.Tiles
 import com.mahjong.assistant.overlay.OverlayService
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
@@ -78,8 +80,8 @@ class CaptureForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        // 给系统足够时间确认前台服务状态
-        mainHandler.postDelayed({ startCapture(resultCode, dataIntent) }, 500)
+        // 延迟2.5秒: 等系统切回雀魂画面 (授权弹窗→游戏过渡动画)
+        mainHandler.postDelayed({ startCapture(resultCode, dataIntent) }, 2500)
         return START_STICKY
     }
 
@@ -112,22 +114,34 @@ class CaptureForegroundService : Service() {
                         image.close()
 
                         val (results, _) = TileMatcher.recognize(bitmap)
+
+                        // 保存截图供审核界面预览
+                        val ssPath = saveScreenshot(bitmap)
                         bitmap.recycle()
 
-                        if (results.size >= 13) {
-                            val hand = results.map { it.tileId }.toIntArray()
-                            val handStr = Tiles.toDisplayString(hand)
-                            val uncertain = results.count { it.needsCheck }
-                            updateOverlay("● 识别${results.size}张: $handStr" +
-                                if (uncertain > 0) " | ⚠${uncertain}张待确认" else " ✓")
-                            sendToOverlay(hand)
+                        // 推检测日志到悬浮窗
+                        updateOverlay(TileMatcher.lastLog)
 
-                            // 延迟1秒调天凤，让用户先看到识别结果
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                verifyWithTenhou(hand)
-                            }, 1200)
+                        if (results.size >= 13) {
+                            val tileIds = results.map { it.tileId }.toIntArray()
+                            val confidences = results.map { it.confidence }.toDoubleArray()
+                            val handStr = Tiles.toDisplayString(tileIds)
+                            val uncertain = results.count { it.needsCheck }
+                            updateOverlay(TileMatcher.lastLog + "\n● 识别${results.size}张: $handStr" +
+                                if (uncertain > 0) " | ⚠${uncertain}张待确认" else " ✓")
+
+                            // 启动审核编辑界面
+                            launchReview(tileIds, confidences, ssPath)
+                        } else if (results.isNotEmpty()) {
+                            val tileIds = results.map { it.tileId }.toIntArray()
+                            val confidences = results.map { it.confidence }.toDoubleArray()
+                            val handStr = if (tileIds.isNotEmpty()) Tiles.toDisplayString(tileIds) else "—"
+                            updateOverlay(TileMatcher.lastLog + "\n● 仅${results.size}张: $handStr → 进入审核")
+
+                            launchReview(tileIds, confidences, ssPath)
                         } else {
-                            updateOverlay("● 仅检测${results.size}张，至少需13张")
+                            updateOverlay(TileMatcher.lastLog + "\n● 未检测到牌")
+                            cleanup()
                         }
                     } else {
                         updateOverlay("● 截屏无数据")
@@ -247,6 +261,40 @@ class CaptureForegroundService : Service() {
 
     // 仅更新状态栏，不动手牌建议
     private fun updateOverlayStatusOnly(msg: String) = updateOverlay(msg)
+
+    private fun launchReview(tileIds: IntArray, confidences: DoubleArray, screenshotPath: String?) {
+        try {
+            val intent = Intent(this, ReviewActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra(ReviewActivity.EXTRA_TILE_IDS, tileIds)
+                putExtra(ReviewActivity.EXTRA_CONFIDENCES, confidences)
+                putExtra(ReviewActivity.EXTRA_LOG, TileMatcher.lastLog)
+                if (screenshotPath != null) {
+                    putExtra(ReviewActivity.EXTRA_SCREENSHOT_PATH, screenshotPath)
+                }
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            updateOverlay("● 审核界面启动失败: ${e.message?.take(30)}")
+        }
+        // 截屏服务完成，退出
+        cleanup()
+    }
+
+    private fun saveScreenshot(bitmap: Bitmap): String? {
+        return try {
+            val dir = File(cacheDir, "screenshots")
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "capture_${System.currentTimeMillis()}.jpg")
+            val fos = java.io.FileOutputStream(file)
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 70, fos)
+            fos.close()
+            file.absolutePath
+        } catch (e: Exception) {
+            android.util.Log.e("CaptureSvc", "保存截图失败: ${e.message}")
+            null
+        }
+    }
 
     override fun onBind(intent: Intent?) = null
 }

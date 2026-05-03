@@ -15,16 +15,32 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- 日志写入公共目录 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
+    <!-- Android 11+ 包可见性: 允许查询雀魂 -->
+    <queries>
+        <package android:name="com.soulgamechst.majsoul" />
+        <package android:name="com.majsoul.riichimahjong" />
+        <package android:name="com.shengqu.majsoul" />
+        <package android:name="com.komoe.majsoulgp" />
+        <package android:name="com.dmm.majsoul" />
+    </queries>
+
     <application
+        android:requestLegacyExternalStorage="true"
         android:allowBackup="true"
-        android:label="雀魂助手"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.AppCompat.NoActionBar">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="雀魂助手"
+            android:label="@string/app_name"
             android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -35,15 +51,15 @@
         <service
             android:name=".overlay.OverlayService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|mediaProjection">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="麻将游戏辅助悬浮窗" />
         </service>
 
-        <!-- 截屏前台服务 (Android15+ mediaProjection要求) -->
+        <!-- 长期截屏服务 (一次授权, 持续持有) -->
         <service
-            android:name=".capture.CaptureForegroundService"
+            android:name=".capture.CaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
@@ -57,6 +73,11 @@
         <!-- 手动输入 Activity -->
         <activity
             android:name=".ManualInputActivity"
+            android:exported="false" />
+
+        <!-- 识别结果审核 Activity -->
+        <activity
+            android:name=".ReviewActivity"
             android:exported="false" />
 
         <!-- 模板校准 Activity -->

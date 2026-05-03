@@ -164,16 +164,27 @@ class ManualInputActivity : AppCompatActivity() {
                 ).apply { marginEnd = dpToPx(3) }
 
                 setOnClickListener {
-                    if (currentTiles.size >= 14) {
-                        Toast.makeText(this@ManualInputActivity, "最多14张", Toast.LENGTH_SHORT).show()
-                        return@setOnClickListener
+                    val cnt = currentTiles.count { it == tileId }
+                    if (cnt >= 4) {
+                        // 已满4张 → 全部删除
+                        currentTiles.removeAll { it == tileId }
+                        updateDisplay()
+                    } else {
+                        if (currentTiles.size >= 14) {
+                            Toast.makeText(this@ManualInputActivity, "最多14张", Toast.LENGTH_SHORT).show()
+                            return@setOnClickListener
+                        }
+                        currentTiles.add(tileId)
+                        updateDisplay()
                     }
-                    if (currentTiles.count { it == tileId } >= maxCount) {
-                        Toast.makeText(this@ManualInputActivity, "${Tiles.name(tileId)} 最多4张", Toast.LENGTH_SHORT).show()
-                        return@setOnClickListener
+                    // 更新按钮文字显示数量
+                    val newCnt = currentTiles.count { it == tileId }
+                    text = if (newCnt > 0) {
+                        "${if (isHonor) Tiles.name(tileId) else (tileId % 9 + 1).toString()}×$newCnt"
+                    } else {
+                        if (isHonor) Tiles.name(tileId) else (tileId % 9 + 1).toString()
                     }
-                    currentTiles.add(tileId)
-                    updateDisplay()
+                    setTextColor(if (newCnt >= 4) 0xFF888888.toInt() else 0xFFA0F0A0.toInt())
                 }
             }.also { tileRow.addView(it) }
         }

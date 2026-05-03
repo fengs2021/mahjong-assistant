@@ -14,6 +14,13 @@ object Efficiency {
         val deltaShanten: Int    // 向听变化 (负=改善)
     )
 
+    /** 13张手牌分析: 向听数 + 有效进张 */
+    fun analyze13(hand: IntArray, visible: IntArray = IntArray(0)): Pair<Int, List<Pair<Int, Int>>> {
+        val currentS = Shanten.calculate(hand).shanten
+        val (ukeire, tiles) = calcUkeire(hand, visible, currentS)
+        return Pair(currentS, tiles)
+    }
+
     /**
      * 分析14张手牌的切牌建议
      */
