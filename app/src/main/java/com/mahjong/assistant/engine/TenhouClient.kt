@@ -2,8 +2,15 @@ package com.mahjong.assistant.engine
 
 import android.os.Handler
 import android.os.Looper
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import com.mahjong.assistant.util.FLog
+import okhttp3.OkHttpClient
+import okhttp3.Request as OkRequest
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -12,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference
  * 天凤牌理 WebView 查询客户端
  *
  * 天凤页面 (tenhou.net/2/) 使用 JS 渲染, 必须用 WebView 抓取。
+ * Android 5.0+ WebView 不走系统 HTTP 代理 → 国内需用 OkHttp 代理拦截。
  * 解析 textarea 中的天凤分析结果, 提取最优切牌建议。
  */
 object TenhouClient {
@@ -19,6 +27,9 @@ object TenhouClient {
     private var webView: WebView? = null
     private var isReady = false
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** OkHttp 代理客户端 (用于 WebView 请求拦截) */
+    private var proxyClient: OkHttpClient? = null
 
     /** 天凤推荐结果 */
     data class Advice(
@@ -28,17 +39,56 @@ object TenhouClient {
         val ukeire: Int                // 有效进张数
     )
 
-    /** 初始化 WebView (需在主线程调用一次) */
-    fun init(wv: WebView) {
+    /** 初始化 WebView + 代理 (需在主线程调用一次) */
+    fun init(wv: WebView, proxyHost: String = PROXY_HOST, proxyPort: Int = PROXY_PORT) {
         webView = wv
         wv.settings.javaScriptEnabled = true
+
+        // 创建 OkHttp 代理客户端
+        proxyClient = OkHttpClient.Builder()
+            .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)))
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .build()
+
+        // WebViewClient 拦截所有请求, 通过代理发出
+        wv.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+            ): WebResourceResponse? {
+                return try {
+                    val okReq = OkRequest.Builder()
+                        .url(request.url.toString())
+                        .header("User-Agent", request.requestHeaders["User-Agent"] ?: "Mozilla/5.0")
+                        .build()
+                    val response = proxyClient!!.newCall(okReq).execute()
+                    val mime = response.header("content-type", "text/html")?.split(";")?.firstOrNull() ?: "text/html"
+                    val encoding = response.header("content-encoding") ?: "UTF-8"
+                    val body = response.body
+                    if (body != null) {
+                        WebResourceResponse(mime, encoding, body.byteStream())
+                    } else null
+                } catch (e: Exception) {
+                    FLog.w("Tenhou", "proxy intercept failed: ${request.url.host}")
+                    null // 让 WebView 直连降级
+                }
+            }
+        }
+
         isReady = true
-        FLog.i("Tenhou", "WebView ready")
+        FLog.i("Tenhou", "WebView ready, proxy=$proxyHost:$proxyPort")
+    }
+
+    companion object {
+        const val PROXY_HOST = "127.0.0.1"
+        const val PROXY_PORT = 7890
     }
 
     fun release() {
         isReady = false
         webView = null
+        proxyClient = null
         FLog.i("Tenhou", "released")
     }
 
