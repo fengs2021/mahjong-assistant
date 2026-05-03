@@ -38,8 +38,15 @@ class OverlayService : Service() {
     private lateinit var statusLabel: TextView
     private lateinit var captureBtn: Button
     private lateinit var manualBtn: Button
+    private lateinit var autoBtn: Button
 
     private var currentHand = IntArray(0)
+
+    // 自动截图
+    private val autoHandler = Handler(Looper.getMainLooper())
+    private var autoRunnable: Runnable? = null
+    private var isAutoCapturing = false
+    private val autoIntervalMs = 3000L  // 3秒
 
     // 存储最近识别结果，供点击跳转ReviewActivity
     private var lastTileIds = IntArray(0)
@@ -278,7 +285,15 @@ class OverlayService : Service() {
             setPadding(0, 8, 0, 8)
             setOnClickListener { onManualInput() }
         }
-        btnRow.addView(manualBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        btnRow.addView(manualBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 4 })
+
+        autoBtn = Button(ctx).apply {
+            text = "🔄 自动"; textSize = 11f; minWidth = 0; minHeight = 0
+            setBackgroundColor(colorPanel); setTextColor(colorSub)
+            setPadding(0, 8, 0, 8)
+            setOnClickListener { toggleAutoCapture() }
+        }
+        btnRow.addView(autoBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
         container.addView(btnRow)
 
@@ -486,6 +501,44 @@ class OverlayService : Service() {
         }
     }
 
+    /** 切换自动截图 */
+    private fun toggleAutoCapture() {
+        if (isAutoCapturing) {
+            stopAutoCapture()
+        } else {
+            startAutoCapture()
+        }
+    }
+
+    private fun startAutoCapture() {
+        if (isAutoCapturing) return
+        isAutoCapturing = true
+        autoBtn.text = "⏸ 停止"
+        autoBtn.setBackgroundColor(0xFFFF6B35.toInt())
+        log("● 自动截图 (每${autoIntervalMs / 1000}秒)")
+        FLog.i("OverlaySvc", "auto capture started")
+
+        val runnable = object : Runnable {
+            override fun run() {
+                if (!isAutoCapturing) return
+                onCapture()
+                autoHandler.postDelayed(this, autoIntervalMs)
+            }
+        }
+        autoRunnable = runnable
+        autoHandler.post(runnable)
+    }
+
+    private fun stopAutoCapture() {
+        isAutoCapturing = false
+        autoRunnable?.let { autoHandler.removeCallbacks(it) }
+        autoRunnable = null
+        autoBtn.text = "🔄 自动"
+        autoBtn.setBackgroundColor(colorPanel)
+        log("● 自动截图已停止")
+        FLog.i("OverlaySvc", "auto capture stopped")
+    }
+
     /** 点击建议区 → 打开ReviewActivity手动编辑 */
     private fun openReviewForEdit() {
         if (lastTileIds.isEmpty()) {
@@ -575,6 +628,7 @@ class OverlayService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        stopAutoCapture()
         FLog.i("OverlaySvc", "onDestroy")
         if (::overlayView.isInitialized && overlayView.isAttachedToWindow) {
             windowManager.removeView(overlayView)
