@@ -165,11 +165,11 @@ object TileDetector {
                 val gy = i / grid
                 val gx = i % grid
 
-                // 找到最高分类别
+                // sigmoid激活: class scores
                 var maxScore = 0f
                 var bestClass = -1
                 for (c in 4 until 38) {
-                    val score = data[base + c]
+                    val score = sigmoid(data[base + c])
                     if (score > maxScore) {
                         maxScore = score
                         bestClass = c - 4
@@ -178,19 +178,18 @@ object TileDetector {
 
                 if (maxScore < CONF_THRESHOLD) continue
 
-                // bbox 解码
-                val x = data[base + 0]
-                val y = data[base + 1]
-                val w = data[base + 2]
-                val h = data[base + 3]
+                // sigmoid激活: bbox
+                val sx = sigmoid(data[base + 0])
+                val sy = sigmoid(data[base + 1])
+                val sw = sigmoid(data[base + 2])
+                val sh = sigmoid(data[base + 3])
 
-                // 归一化 → 像素坐标
-                val px = x * stride + gx * stride
-                val py = y * stride + gy * stride
-                val pw = w * stride
-                val ph = h * stride
+                // 转像素坐标 (anchor-free YOLOv8)
+                val px = (sx * 2 - 0.5f + gx) * stride
+                val py = (sy * 2 - 0.5f + gy) * stride
+                val pw = sw * sw * 4 * stride
+                val ph = sh * sh * 4 * stride
 
-                // 转为中心点 → 左上角
                 val left = px - pw / 2
                 val top = py - ph / 2
 
@@ -199,9 +198,10 @@ object TileDetector {
             offset += nCells * 38
         }
 
-        // NMS
         return nms(candidates, NMS_THRESHOLD)
     }
+
+    private fun sigmoid(x: Float): Float = (1.0 / (1.0 + Math.exp((-x).toDouble()))).toFloat()
 
     private fun nms(detections: List<Detection>, iouThreshold: Float): List<Detection> {
         if (detections.isEmpty()) return emptyList()
