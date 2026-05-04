@@ -84,5 +84,10 @@
             android:name=".CalibrateActivity"
             android:exported="false" />
 
+        <!-- 模板采集器 (标注) -->
+        <activity
+            android:name=".TemplateCollectorActivity"
+            android:exported="false" />
+
     </application>
 </manifest>

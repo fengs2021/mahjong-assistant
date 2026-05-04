@@ -148,6 +148,22 @@ object TileMatcher {
     fun templateCount(): Int = templates.size
     fun isOpencvReady(): Boolean = opencvReady
 
+    /** 公开接口: 识别单张牌面Bitmap → (tileId, confidence) 或 null */
+    fun identifySingleTile(tileBitmap: Bitmap): Pair<Int, Double>? {
+        if (!templatesLoaded || !opencvReady) return null
+        return try {
+            val bmp = tileBitmap.copy(Bitmap.Config.ARGB_8888, false)
+            val mat = Mat()
+            Utils.bitmapToMat(bmp, mat)
+            Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
+            bmp.recycle()
+            matchSingleTile(mat)
+        } catch (e: Exception) {
+            FLog.w(TAG, "identifySingleTile error: ${e.message}")
+            null
+        }
+    }
+
     // ─── 模板加载 ───
     private fun loadPresetTemplates(context: Context): Boolean {
         return try {

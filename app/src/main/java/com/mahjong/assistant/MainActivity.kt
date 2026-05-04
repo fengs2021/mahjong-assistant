@@ -103,6 +103,10 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
+            addButton(root, "📷 模板采集器") {
+                startActivity(Intent(this, TemplateCollectorActivity::class.java))
+            }
+
             refreshBtn = addButton(root, "♿ 检查无障碍") {
                 ScreenCaptureService.openSettings(this)
             }
