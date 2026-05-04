@@ -1,0 +1,24 @@
+name: Export YOLO ONNX
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    container: ultralytics/ultralytics:latest
+    steps:
+      - name: Download model
+        run: |
+          curl -L -o /tmp/best.pt \
+            "https://raw.githubusercontent.com/ZhengChaoAn0119/Mahjong-Tile-yolo/main/runs/detect/majsoul_hand_phase2/weights/best.pt"
+
+      - name: Export ONNX
+        run: |
+          yolo export model=/tmp/best.pt format=onnx imgsz=640
+
+      - name: Upload ONNX
+        uses: actions/upload-artifact@v4
+        with:
+          name: mahjong-yolo-onnx
+          path: /tmp/best.onnx
