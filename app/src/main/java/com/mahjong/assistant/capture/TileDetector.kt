@@ -118,8 +118,8 @@ object TileDetector {
             // 推理 (反射调用 setInput + forward)
             val nn = net ?: return emptyList()
             val netClass = nn.javaClass
-            // setInput 有两个重载: (Mat) 和 (Mat, String), 用 Mat::class.java 匹配第一个
-            netClass.getMethod("setInput", Mat::class.java).invoke(nn, blob)
+            // OpenCV Net.setInput 通常需要 (Mat, String) 两个参数
+            netClass.getMethod("setInput", Mat::class.java, String::class.java).invoke(nn, blob, "")
             val output = netClass.getMethod("forward").invoke(nn) as Mat
             (blob as Mat).release()
 
@@ -137,8 +137,8 @@ object TileDetector {
             FLog.i(TAG, "YOLO检测: ${results.size}张 → ${Tiles.toDisplayString(results.map { it.tileId }.toIntArray())}")
             return results
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "YOLO推理失败", e)
-            FLog.e(TAG, "YOLO推理失败: ${e.message}")
+            android.util.Log.e(TAG, "YOLO推理失败: ${e.javaClass.simpleName}", e)
+            FLog.e(TAG, "YOLO推理失败: ${e.javaClass.simpleName}: ${e.message}")
             return emptyList()
         }
     }
