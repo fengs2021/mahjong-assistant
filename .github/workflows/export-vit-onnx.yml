@@ -1,0 +1,53 @@
+name: Export ViT ONNX
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install deps
+        run: pip install transformers torch onnx onnxruntime
+      
+      - name: Export ViT to ONNX
+        run: |
+          python3 << 'EOF'
+          from transformers import ViTForImageClassification, ViTImageProcessor
+          import torch
+          
+          model_id = "pjura/mahjong_soul_vision"
+          print(f"Loading {model_id}...")
+          
+          model = ViTForImageClassification.from_pretrained(model_id)
+          model.eval()
+          
+          # 导出 ONNX
+          dummy = torch.randn(1, 3, 224, 224)
+          onnx_path = "/tmp/mahjong_vit.onnx"
+          
+          torch.onnx.export(
+              model, dummy, onnx_path,
+              input_names=["pixel_values"],
+              output_names=["logits"],
+              dynamic_axes={"pixel_values": {0: "batch"}, "logits": {0: "batch"}},
+              opset_version=14
+          )
+          
+          import os
+          size_mb = os.path.getsize(onnx_path) / 1024 / 1024
+          print(f"ONNX exported: {size_mb:.1f}MB")
+          EOF
+      
+      - name: Upload ONNX
+        uses: actions/upload-artifact@v4
+        with:
+          name: mahjong-vit-onnx
+          path: /tmp/mahjong_vit.onnx
