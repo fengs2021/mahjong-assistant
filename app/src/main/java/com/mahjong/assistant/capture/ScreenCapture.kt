@@ -83,6 +83,7 @@ object TileMatcher {
     private var opencvReady = false
 
     @Volatile var lastLog: String = ""
+    @Volatile var lastEmptySlots: List<Int> = emptyList()  // 空位slot索引(提起的牌)
 
     // ─── tileId映射 (兼容简繁体文件名) ───
     private val nameToId = mapOf(
@@ -393,6 +394,7 @@ object TileMatcher {
         srcMat.release()
 
         val results = mutableListOf<MatchResult>()
+        val emptySlots = mutableListOf<Int>()
 
         // 主手牌 13张
         for ((i, slot) in mainHandSlots.withIndex()) {
@@ -401,6 +403,17 @@ object TileMatcher {
             if (faceRight > gray.cols() || faceBottom > gray.rows()) continue
 
             val tileMat = Mat(gray, Rect(slot.faceLeft, slot.faceTop, slot.faceW, slot.faceH))
+            // 亮度检测: 空位(桌面背景 mean~56, 有牌mean~119+)
+            val meanCheck = MatOfDouble()
+            Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
+            val hasTile = meanCheck.get(0, 0)[0] > 80.0
+            meanCheck.release()
+            if (!hasTile) {
+                emptySlots.add(i)
+                FLog.i("TileMatcher", "  slot[$i]: 空位(提起)")
+                tileMat.release()
+                continue
+            }
             val (tileId, score) = matchSingleTile(tileMat)
             tileMat.release()
 
@@ -409,6 +422,7 @@ object TileMatcher {
                 FLog.i("TileMatcher", "  slot[$i]: ${Tiles.name(tileId)} (${"%.3f".format(score)})")
             }
         }
+        lastEmptySlots = emptySlots.toList()
 
         // 摸牌: 副露时手牌减少, 摸牌位置左移
         // 动态计算摸牌位置: 最后一张手牌右边 + 间距(43px)

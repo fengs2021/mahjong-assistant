@@ -38,11 +38,13 @@ class OverlayService : Service() {
     private lateinit var tileDisplay: TextView
     private lateinit var shantenLabel: TextView
     private lateinit var recommendLabel: TextView
+    private lateinit var dangerLabel: TextView
     private lateinit var captureBtn: Button
     private lateinit var manualBtn: Button
     private lateinit var autoBtn: Button
 
     private var currentHand = IntArray(0)
+    private var prevHandTiles = IntArray(0)  // 上一帧手牌, 用于检测提起的牌
 
     // 配色 (createOverlay 中使用)
     private val colorPanel = 0x40000000.toInt()  // 黑色25%
@@ -250,6 +252,19 @@ class OverlayService : Service() {
         container.addView(recommendLabel, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = 3 })
+
+        // 放铳警告
+        dangerLabel = TextView(ctx).apply {
+            text = ""; textSize = 10f; setTextColor(0xFFFFCC44.toInt())
+            gravity = Gravity.CENTER
+            setSingleLine(false); maxLines = 1
+            setPadding(4, 2, 4, 2)
+            background = roundedBg(0x50303000.toInt(), 4f)
+            visibility = View.GONE  // 默认隐藏
+        }
+        container.addView(dangerLabel, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 2 })
 
         // 控制按钮 (小)
         val btnRow = LinearLayout(ctx).apply {
@@ -688,15 +703,36 @@ class OverlayService : Service() {
                 lastConfidences = confidences
                 lastScreenshotPath = ssPath
 
+                // 检测提起的牌: 对比当前vs上一帧手牌
+                if (tileIds.isNotEmpty() && prevHandTiles.isNotEmpty()) {
+                    val missing = prevHandTiles.filter { pt -> tileIds.none { it == pt } }
+                    val lifted = missing.groupBy { it }.map { (tid, list) -> tid to list.size }
+                    if (lifted.isNotEmpty()) {
+                        val safety = DefenseAnalyzer.analyzeBasic(prevHandTiles)
+                        val sb = StringBuilder()
+                        for ((tid, cnt) in lifted) {
+                            val sr = DefenseAnalyzer.dangerOf(tid, safety)
+                            val emoji = sr?.let { DefenseAnalyzer.safetyEmoji(it.dangerLevel) } ?: ""
+                            val name = if (tid in 0..33) Tiles.name(tid) else "?"
+                            sb.append("提起${name} $emoji ")
+                        }
+                        dangerLabel.text = sb.toString().trim()
+                        dangerLabel.visibility = View.VISIBLE
+                    }
+                }
+
                 // 更新牌型显示
                 tileDisplay.text = if (tileIds.isNotEmpty())
                     Tiles.toCompactString(tileIds) else "未识别"
 
                 if (tileIds.size >= 14) {
+                    dangerLabel.visibility = View.GONE  // 正常手牌, 隐藏放铳警告
                     updateAdvice(tileIds)
                 } else if (tileIds.size == 13) {
                     updateAdviceShantenOnly(tileIds)
                 }
+
+                prevHandTiles = tileIds.copyOf()
             }
             ACTION_UPDATE -> {
                 val handArray = intent.getIntArrayExtra(EXTRA_HAND)
