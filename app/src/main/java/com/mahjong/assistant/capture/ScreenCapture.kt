@@ -394,16 +394,19 @@ object TileMatcher {
         Imgproc.cvtColor(srcMat, gray, Imgproc.COLOR_RGBA2GRAY)
         srcMat.release()
 
+        val detectedFaceY = detectHandY(gray)
+        val detectedFaceH = minOf(gray.rows() - detectedFaceY, 143)
+
         val results = mutableListOf<MatchResult>()
         val emptySlots = mutableListOf<Int>()
 
-        // 主手牌 13张
+        // 主手牌 13张 (自适应y)
         for ((i, slot) in mainHandSlots.withIndex()) {
             val faceRight = slot.faceLeft + slot.faceW
-            val faceBottom = slot.faceTop + slot.faceH
+            val faceBottom = detectedFaceY + detectedFaceH
             if (faceRight > gray.cols() || faceBottom > gray.rows()) continue
 
-            val tileMat = Mat(gray, Rect(slot.faceLeft, slot.faceTop, slot.faceW, slot.faceH))
+            val tileMat = Mat(gray, Rect(slot.faceLeft, detectedFaceY, slot.faceW, detectedFaceH))
             // 亮度检测: 空位(桌面背景 mean~56, 有牌mean~119+)
             val meanCheck = MatOfDouble()
             Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
@@ -415,7 +418,7 @@ object TileMatcher {
                 tileMat.release()
                 continue
             }
-            val (tileId, score) = matchSingleTile(tileMat)
+            val (tileId, score) = matchSingleTileMultiDir(tileMat)
             tileMat.release()
 
             if (tileId >= 0) {
@@ -436,28 +439,28 @@ object TileMatcher {
                 slotLeft = drawnFaceLeft - 5,
                 slotTop = drawnSlot.slotTop,
                 faceLeft = drawnFaceLeft,
-                faceTop = drawnSlot.faceTop,
+                faceTop = detectedFaceY,
                 faceW = drawnSlot.faceW,
-                faceH = drawnSlot.faceH
+                faceH = detectedFaceH
             )
         } else {
             drawnSlot  // 13张或无牌时用默认坐标
         }
 
         val dFaceRight = drawnSlotDynamic.faceLeft + drawnSlotDynamic.faceW
-        val dFaceBottom = drawnSlotDynamic.faceTop + drawnSlotDynamic.faceH
+        val dFaceBottom = detectedFaceY + detectedFaceH
         if (dFaceRight <= gray.cols() && dFaceBottom <= gray.rows()) {
             // 副露时摸牌位置可能偏移, 扩大搜索范围
             var bestDrawnTile = -1; var bestDrawnScore = 0.0; var bestDrawnX = drawnSlotDynamic.faceLeft
             for (dx in -20..20 step 3) {
                 val sx = (drawnSlotDynamic.faceLeft + dx).coerceIn(0, gray.cols() - drawnSlotDynamic.faceW)
-                val tileMat = Mat(gray, Rect(sx, drawnSlotDynamic.faceTop, drawnSlotDynamic.faceW, drawnSlotDynamic.faceH))
+                val tileMat = Mat(gray, Rect(sx, detectedFaceY, drawnSlotDynamic.faceW, detectedFaceH))
                 val meanCheck = MatOfDouble()
                 Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
                 val hasTile = meanCheck.get(0, 0)[0] > 80.0
                 meanCheck.release()
                 if (hasTile) {
-                    val (tid, score) = matchSingleTile(tileMat)
+                    val (tid, score) = matchSingleTileMultiDir(tileMat)
                     if (tid >= 0 && score > bestDrawnScore) {
                         bestDrawnScore = score; bestDrawnTile = tid; bestDrawnX = sx
                     }
@@ -512,6 +515,85 @@ object TileMatcher {
         } else {
             Pair(-1, bestScore)
         }
+    }
+
+    /**
+     * 方向感知匹配 — 按宽高比自动选方向
+     *   竖牌(w<h) → 尝试0°(正常竖) + 180°(上下颠倒)
+     *   横牌(w>h) → 尝试90°CW + 270°CW(左右翻转)
+     */
+    private fun matchSingleTileMultiDir(tileGray: Mat): Pair<Int, Double> {
+        if (isBlankTile(tileGray)) return Pair(31, 1.0)
+
+        val cropW = tileGray.cols()
+        val cropH = tileGray.rows()
+        val isHorizontal = cropW > cropH
+
+        // 选择匹配方向: 竖→上下, 横→左右
+        val rotations = if (isHorizontal) {
+            intArrayOf(Core.ROTATE_90_CLOCKWISE, Core.ROTATE_90_COUNTERCLOCKWISE)
+        } else {
+            intArrayOf(-1, Core.ROTATE_180)  // -1 = 不旋转(0°)
+        }
+
+        var bestId = -1
+        var bestScore = 0.0
+
+        for ((tileId, template) in templates) {
+            if (tileId == 31) continue
+
+            for (rot in rotations) {
+                val src = if (rot == -1) template else {
+                    val r = Mat()
+                    Core.rotate(template, r, rot)
+                    r
+                }
+
+                val resized = Mat()
+                Imgproc.resize(src, resized, Size(cropW.toDouble(), cropH.toDouble()))
+                val result = Mat()
+                Imgproc.matchTemplate(tileGray, resized, result, Imgproc.TM_CCOEFF_NORMED)
+                val score = result.get(0, 0)[0]
+                result.release(); resized.release()
+                if (rot != -1) src.release()
+
+                if (score > bestScore) {
+                    bestScore = score; bestId = tileId
+                }
+            }
+        }
+
+        return if (bestId >= 0 && bestScore >= getThreshold(bestId)) {
+            Pair(bestId, bestScore)
+        } else {
+            Pair(-1, bestScore)
+        }
+    }
+
+    /**
+     * 自适应检测手牌行 y 坐标 (faceTop)
+     * 扫描 y=1000~1280 范围, 找灰度水平方差最大的行 — 牌面纹理丰富方差高
+     */
+    private fun detectHandY(gray: Mat): Int {
+        val imgW = gray.cols()
+        val scanH = 5  // 每条带高度
+        val handX = 400  // 手牌区域起始x
+        val handW = minOf(imgW - handX, 1800)
+
+        var bestY = 1106  // 兜底
+        var bestStd = 0.0
+
+        for (y in 1000..1280 step 5) {
+            if (y + scanH > gray.rows()) break
+            val band = Mat(gray, Rect(handX, y, handW, scanH))
+            val m = MatOfDouble(); val s = MatOfDouble()
+            Core.meanStdDev(band, m, s)
+            val std = s.get(0, 0)[0]
+            band.release(); m.release(); s.release()
+            if (std > bestStd) { bestStd = std; bestY = y }
+        }
+        FLog.i("TileMatcher", "detectHandY: y=$bestY (std=${\"%.1f\".format(bestStd)})")
+        return bestY
     }
 
     /**
