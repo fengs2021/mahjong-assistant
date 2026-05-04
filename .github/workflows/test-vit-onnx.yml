@@ -74,12 +74,11 @@ jobs:
           # 模板匹配的 ground truth (从日志)
           GT = ['1b','7b','9b','2p','2p','3p','6p','8p','5n','6n','ew','wd']
           
-          id2label = model.config.id2label
-          if not id2label or len(id2label) < 34:
-              # Transformer可能因为num_labels=null没加载id2label
-              import json, requests
-              cfg = requests.get(f"https://huggingface.co/{model_id}/raw/main/config.json").json()
-              id2label = cfg.get("id2label", {})
+          # 直接硬编码标签映射 (已从config.json确认)
+          LABELS = {0:"1b",1:"1n",2:"1p",3:"2b",4:"2n",5:"2p",6:"3b",7:"3n",8:"3p",
+                    9:"4b",10:"4n",11:"4p",12:"5b",13:"5n",14:"5p",15:"6b",16:"6n",17:"6p",
+                    18:"7b",19:"7n",20:"7p",21:"8b",22:"8n",23:"8p",24:"9b",25:"9n",26:"9p",
+                    27:"ew",28:"gd",29:"nw",30:"rd",31:"sw",32:"wd",33:"ww"}
           
           print(f"\n{'slot':>4} {'gt':>3} {'pred':>4} {'conf':>6} {'match'}")
           correct = 0
@@ -97,7 +96,7 @@ jobs:
               
               probs = np.exp(logits - logits.max()) / np.exp(logits - logits.max()).sum()
               top_idx = int(np.argmax(logits))
-              pred = id2label[str(top_idx)]
+              pred = LABELS[top_idx]
               gt = GT[slot]
               match = "✓" if pred == gt else ""
               if pred == gt: correct += 1
