@@ -98,11 +98,18 @@ object TileDetector {
             Imgproc.resize(roi, resized, Size(INPUT_SIZE.toDouble(), INPUT_SIZE.toDouble()))
 
             // 预处理: BGR → blob (反射调用 Dnn.blobFromImage)
+            // 注意: 必须用 Double.TYPE/Boolean.TYPE 匹配原始类型签名
             val dnnClass = Class.forName("org.opencv.dnn.Dnn")
-            val blobFromImage = dnnClass.getMethod("blobFromImage", Mat::class.java, Double::class.java, Size::class.java, Scalar::class.java, Boolean::class.java, Boolean::class.java)
+            val blobFromImage = dnnClass.getMethod("blobFromImage",
+                Mat::class.java,
+                java.lang.Double.TYPE,      // double scalefactor
+                Size::class.java,
+                Scalar::class.java,
+                java.lang.Boolean.TYPE,     // boolean swapRB
+                java.lang.Boolean.TYPE)     // boolean crop
             val blob = blobFromImage.invoke(null, resized, 1.0 / 255.0,
                 Size(INPUT_SIZE.toDouble(), INPUT_SIZE.toDouble()),
-                Scalar(0.0), true, false)
+                Scalar(0.0), java.lang.Boolean.TRUE, java.lang.Boolean.FALSE)
 
             resized.release()
             roi.release()
@@ -111,9 +118,10 @@ object TileDetector {
             // 推理 (反射调用 setInput + forward)
             val nn = net ?: return emptyList()
             val netClass = nn.javaClass
-            netClass.getMethod("setInput", blob!!.javaClass).invoke(nn, blob)
+            // setInput 有两个重载: (Mat) 和 (Mat, String), 用 Mat::class.java 匹配第一个
+            netClass.getMethod("setInput", Mat::class.java).invoke(nn, blob)
             val output = netClass.getMethod("forward").invoke(nn) as Mat
-            blob.javaClass.getMethod("release").invoke(blob)
+            (blob as Mat).release()
 
             // 解码
             val detections = decodeYoloOutput(output)
