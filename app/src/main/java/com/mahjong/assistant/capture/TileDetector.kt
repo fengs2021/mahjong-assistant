@@ -97,7 +97,7 @@ object TileDetector {
         output.release()
 
         // 按x坐标排序 (从左到右 = 手牌顺序)
-        detections.sortBy { it.x }
+        detections.sortBy { d -> d.x }
 
         // 转换为 MatchResult
         val results = detections.map { det ->

@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import com.mahjong.assistant.R
 import com.mahjong.assistant.ReviewActivity
 import com.mahjong.assistant.capture.ScreenCaptureService
+import com.mahjong.assistant.capture.TileDetector
 import com.mahjong.assistant.capture.TileMatcher
 import com.mahjong.assistant.engine.DefenseAnalyzer
 import com.mahjong.assistant.engine.Efficiency
