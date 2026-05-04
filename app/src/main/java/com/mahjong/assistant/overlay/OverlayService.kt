@@ -16,6 +16,7 @@ import com.mahjong.assistant.R
 import com.mahjong.assistant.ReviewActivity
 import com.mahjong.assistant.capture.ScreenCaptureService
 import com.mahjong.assistant.capture.TileMatcher
+import com.mahjong.assistant.engine.DefenseAnalyzer
 import com.mahjong.assistant.engine.Efficiency
 import com.mahjong.assistant.engine.Shanten
 import com.mahjong.assistant.engine.TenhouClient
@@ -379,6 +380,7 @@ class OverlayService : Service() {
         currentHand = hand
         val result = Shanten.calculate(hand)
         val advice = Efficiency.analyze(hand)
+        val safety = DefenseAnalyzer.analyzeBasic(hand)  // 基础模式: 无河底
 
         // 向听数
         shantenLabel.text = when (result.shanten) {
@@ -392,13 +394,17 @@ class OverlayService : Service() {
             else -> 0xFFA0F0A0.toInt()
         })
 
-        // 推荐 (内联前2)
+        // 推荐 (内联前2) + 安全标注
         if (advice.isNotEmpty()) {
             val best = advice[0]
-            val sb = StringBuilder("🏆 切${best.tileName} 进${best.ukeire}枚")
+            val bestSafe = DefenseAnalyzer.dangerOf(best.tileId, safety)
+            val safeEmoji = bestSafe?.let { DefenseAnalyzer.safetyEmoji(it.dangerLevel) } ?: ""
+            val sb = StringBuilder("🏆 切${best.tileName} 进${best.ukeire}枚 $safeEmoji")
             if (advice.size >= 2) {
                 val second = advice[1]
-                sb.append(" • 次切${second.tileName}")
+                val secondSafe = DefenseAnalyzer.dangerOf(second.tileId, safety)
+                val sEmoji = secondSafe?.let { DefenseAnalyzer.safetyEmoji(it.dangerLevel) } ?: ""
+                sb.append("\n次切${second.tileName} $sEmoji")
             }
             recommendLabel.text = sb.toString()
         }
