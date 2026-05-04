@@ -41,7 +41,8 @@ jobs:
               opset_version=14
           )
           
-          import os
+          import os, onnx
+          onnx.save(onnx.shape_inference.infer_shapes(onnx.load(onnx_path)), onnx_path, save_as_external_data=False)
           size_mb = os.path.getsize(onnx_path) / 1024 / 1024
           print(f"ONNX exported: {size_mb:.1f}MB")
           EOF
