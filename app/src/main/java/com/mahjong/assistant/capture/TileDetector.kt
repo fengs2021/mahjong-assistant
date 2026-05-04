@@ -118,8 +118,14 @@ object TileDetector {
             // 推理 (反射调用 setInput + forward)
             val nn = net ?: return emptyList()
             val netClass = nn.javaClass
-            // OpenCV Net.setInput 通常需要 (Mat, String) 两个参数
-            netClass.getMethod("setInput", Mat::class.java, String::class.java).invoke(nn, blob, "")
+            // 用模型输入名 "images" (ONNX导出时的默认名)
+            try {
+                netClass.getMethod("setInput", Mat::class.java, String::class.java)
+                    .invoke(nn, blob, "images")
+            } catch (e: java.lang.reflect.InvocationTargetException) {
+                // 可能不需要name参数, 回退无参
+                netClass.getMethod("setInput", Mat::class.java).invoke(nn, blob)
+            }
             val output = netClass.getMethod("forward").invoke(nn) as Mat
             (blob as Mat).release()
 
@@ -137,8 +143,10 @@ object TileDetector {
             FLog.i(TAG, "YOLO检测: ${results.size}张 → ${Tiles.toDisplayString(results.map { it.tileId }.toIntArray())}")
             return results
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "YOLO推理失败: ${e.javaClass.simpleName}", e)
-            FLog.e(TAG, "YOLO推理失败: ${e.javaClass.simpleName}: ${e.message}")
+            val cause = if (e is java.lang.reflect.InvocationTargetException) e.cause else e
+            val msg = "${cause?.javaClass?.simpleName}: ${cause?.message}"
+            android.util.Log.e(TAG, "YOLO推理失败: $msg", cause)
+            FLog.e(TAG, "YOLO推理失败: $msg")
             return emptyList()
         }
     }
