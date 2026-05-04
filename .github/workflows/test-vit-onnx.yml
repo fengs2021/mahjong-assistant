@@ -15,7 +15,7 @@ jobs:
           python-version: '3.11'
       
       - name: Install deps
-        run: pip install transformers torch onnx onnxruntime onnxscript pillow
+        run: pip install transformers torch onnx onnxruntime onnxscript pillow opencv-python-headless
       
       - name: Export and test ViT
         run: |
