@@ -491,7 +491,8 @@ class OverlayService : Service() {
     }
 
     private fun onCapture() {
-        if (Build.VERSION.SDK_INT < 34) {
+        if (Build.VERSION.SDK_INT < 21) {
+            FLog.w("OverlaySvc", "SDK too old: ${Build.VERSION.SDK_INT}")
             return
         }
         val svc = ScreenCaptureService.instance
