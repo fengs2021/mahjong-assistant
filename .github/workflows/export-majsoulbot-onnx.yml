@@ -1,0 +1,24 @@
+name: Export MajsoulBot ONNX
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    container: ultralytics/ultralytics:latest
+    steps:
+      - name: Download MajsoulBot model
+        run: |
+          curl -L -o /tmp/mahjong.pt \
+            "https://raw.githubusercontent.com/DeerInForestovo/MajsoulBot/main/detector/mahjong.pt"
+
+      - name: Export ONNX
+        run: |
+          yolo export model=/tmp/mahjong.pt format=onnx imgsz=640
+
+      - name: Upload ONNX
+        uses: actions/upload-artifact@v4
+        with:
+          name: majsoulbot-onnx
+          path: /tmp/mahjong.onnx
