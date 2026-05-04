@@ -84,6 +84,8 @@ object TileMatcher {
 
     @Volatile var lastLog: String = ""
     @Volatile var lastEmptySlots: List<Int> = emptyList()  // 空位slot索引(提起的牌)
+    @Volatile var lastHandY: Int = 1106  // 上次检测到手牌y(自适应)
+    @Volatile var lastHandH: Int = 143   // 上次检测到手牌h
 
     // ─── tileId映射 (兼容简繁体文件名) ───
     private val nameToId = mapOf(
@@ -349,7 +351,7 @@ object TileMatcher {
             if (highConf >= 1) {
                 // 手牌不足13张 → 扫描右下副露区域
                 if (posResults.size < 13) {
-                    val meldResults = scanMeldArea(screenshot)
+                    val meldResults = scanMeldArea(screenshot, lastHandY, lastHandH)
                     FLog.i("TileMatcher", "副露扫描: ${meldResults.size}张 → 合并=${posResults.size + meldResults.size}")
                     posResults + meldResults
                 } else {
@@ -396,6 +398,7 @@ object TileMatcher {
 
         val detectedFaceY = detectHandY(gray)
         val detectedFaceH = minOf(gray.rows() - detectedFaceY, 143)
+        lastHandY = detectedFaceY; lastHandH = detectedFaceH
 
         val results = mutableListOf<MatchResult>()
         val emptySlots = mutableListOf<Int>()
@@ -722,7 +725,7 @@ FLog.i("TileMatcher", "detectHandY: y=$bestY (std=${String.format("%.1f", bestSt
     // 副露在手牌同高度右侧, 牌面约手牌等大
     // ═══════════════════════════════════════════
 
-    private fun scanMeldArea(screenshot: Bitmap): List<MatchResult> {
+    private fun scanMeldArea(screenshot: Bitmap, handY: Int, handH: Int): List<MatchResult> {
         FLog.i("TileMatcher", "scanMeldArea start")
         val srcMat = Mat()
         Utils.bitmapToMat(screenshot, srcMat)
@@ -732,10 +735,9 @@ FLog.i("TileMatcher", "detectHandY: y=$bestY (std=${String.format("%.1f", bestSt
 
         val imgW = gray.cols(); val imgH = gray.rows()
 
-        // 副露区域: 底部右侧, 与手牌同高度 (高度翻倍覆盖杠牌)
-        // 手牌 y=1106~1249 (h=143), 副露上扩到y=1000
-        val meldY = 1000
-        val meldH = minOf(264, imgH - meldY)
+        // 副露区域: 底部右侧, 以手牌y为基准向上扩50向下扩80 (覆盖杠牌横放上下分列)
+        val meldY = maxOf(0, handY - 50)
+        val meldH = minOf(handH + 130, imgH - meldY)
         val meldX = 1150           // 手牌右侧+副露条向左延伸
         val meldW = imgW - meldX
 
@@ -763,33 +765,42 @@ FLog.i("TileMatcher", "detectHandY: y=$bestY (std=${String.format("%.1f", bestSt
         val scaleSteps = 7   // 0.85 + 6*0.05 = 1.15
         val meldThreshold = 0.65
 
+        // 方向: 0°(竖放), 90°CW(横放左), 270°CW(横放右)
+        val templateRots = intArrayOf(-1, Core.ROTATE_90_CLOCKWISE, Core.ROTATE_90_COUNTERCLOCKWISE)
         for ((tileId, template) in templates) {
             if (tileId == 31) continue
             val th = meldThreshold
-            val tH = template.rows().toDouble()
-            val tW = template.cols().toDouble()
-            val targetScale = meldTargetH / tH
 
-            val templateEq = Mat()
-            clahe.apply(template, templateEq)
-
-            for (i in 0 until scaleSteps) {
-                val scale = targetScale * (minScale + i * (maxScale - minScale) / (scaleSteps - 1))
-                val sw = (tW * scale).toInt()
-                val sh = (tH * scale).toInt()
-                if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
-
-                val resized = Mat()
-                Imgproc.resize(templateEq, resized, Size(sw.toDouble(), sh.toDouble()))
-                val result = Mat()
-                Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
-                val mm = Core.minMaxLoc(result)
-                if (mm.maxVal >= th) {
-                    hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), sw, sh, mm.maxVal))
+            for (rot in templateRots) {
+                val tSrc = if (rot == -1) template else {
+                    val r = Mat(); Core.rotate(template, r, rot); r
                 }
-                result.release(); resized.release()
+                val tH = tSrc.rows().toDouble()
+                val tW = tSrc.cols().toDouble()
+                val targetScale = meldTargetH / tH
+
+                val templateEq = Mat()
+                clahe.apply(tSrc, templateEq)
+                if (rot != -1) tSrc.release()
+
+                for (i in 0 until scaleSteps) {
+                    val scale = targetScale * (minScale + i * (maxScale - minScale) / (scaleSteps - 1))
+                    val sw = (tW * scale).toInt()
+                    val sh = (tH * scale).toInt()
+                    if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
+
+                    val resized = Mat()
+                    Imgproc.resize(templateEq, resized, Size(sw.toDouble(), sh.toDouble()))
+                    val result = Mat()
+                    Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
+                    val mm = Core.minMaxLoc(result)
+                    if (mm.maxVal >= th) {
+                        hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), sw, sh, mm.maxVal))
+                    }
+                    result.release(); resized.release()
+                }
+                templateEq.release()
             }
-            templateEq.release()
         }
 
         // ─── 副露专用模板匹配 (宽高比~1:1, 从截图中采集) ───
