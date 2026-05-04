@@ -15,7 +15,7 @@ jobs:
           python-version: '3.11'
       
       - name: Install deps
-        run: pip install transformers torch onnx onnxruntime
+        run: pip install transformers torch onnx onnxruntime onnxscript
       
       - name: Export ViT to ONNX
         run: |
