@@ -592,7 +592,7 @@ object TileMatcher {
             band.release(); m.release(); s.release()
             if (std > bestStd) { bestStd = std; bestY = y }
         }
-        FLog.i("TileMatcher", "detectHandY: y=$bestY (std=${\"%.1f\".format(bestStd)})")
+FLog.i("TileMatcher", "detectHandY: y=$bestY (std=${String.format("%.1f", bestStd)})")
         return bestY
     }
 
