@@ -397,9 +397,7 @@ object TileMatcher {
         val results = mutableListOf<MatchResult>()
         val emptySlots = mutableListOf<Int>()
         val actualFaceTops = mutableListOf<Triple<Int, Int, Int>>()  // (slotIndex, actualFaceTop, tileId)
-
-        // 提起牌搜索: 向上扩展60px, 垂直扫描找到牌的实际顶部
-        val searchUpPx = 60
+        val searchUpPx = 60  // 提起牌向上搜索范围
 
         // 主手牌 13张
         for ((i, slot) in mainHandSlots.withIndex()) {
@@ -407,50 +405,58 @@ object TileMatcher {
             val faceBottom = slot.faceTop + slot.faceH
             if (faceRight > gray.cols() || faceBottom > gray.rows()) continue
 
-            // 向上扩展搜索窗口
+            // 1. 先检查固定位置 (快速路径, 99%情况)
+            val tileMat = Mat(gray, Rect(slot.faceLeft, slot.faceTop, slot.faceW, slot.faceH))
+            val meanCheck = MatOfDouble()
+            Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
+            val hasTileAtDefault = meanCheck.get(0, 0)[0] > 80.0
+            meanCheck.release()
+
+            if (hasTileAtDefault) {
+                // 固定位置有牌 → 直接识别, 不扫描
+                val (tileId, score) = matchSingleTile(tileMat)
+                tileMat.release()
+                if (tileId >= 0) {
+                    results.add(MatchResult(tileId, score, score < 0.70))
+                    actualFaceTops.add(Triple(i, slot.faceTop, tileId))
+                }
+                continue
+            }
+            tileMat.release()
+
+            // 2. 固定位置没牌 → 向上搜索提起的牌 (慢路径, 仅提起时触发)
             val searchTop = maxOf(0, slot.faceTop - searchUpPx)
-            val searchH = slot.faceH + (slot.faceTop - searchTop)  // 原高度 + 向上扩展量
-            val searchRight = searchTop + searchH
-            if (searchRight > gray.rows()) continue
-            if (slot.faceLeft + slot.faceW > gray.cols()) continue
+            val searchH = slot.faceH + (slot.faceTop - searchTop)
+            val searchBottom = searchTop + searchH
+            if (searchBottom > gray.rows()) { emptySlots.add(i); continue }
+            if (slot.faceLeft + slot.faceW > gray.cols()) { emptySlots.add(i); continue }
 
             val searchMat = Mat(gray, Rect(slot.faceLeft, searchTop, slot.faceW, searchH))
-
-            // 垂直扫描: 从顶部向下, 找牌的上边缘(亮度突变点)
             var actualTop = -1
-            val scanStep = 3
-            val windowH = slot.faceH
-            for (y in 0..(searchH - windowH) step scanStep) {
-                val scanWin = Mat(searchMat, Rect(0, y, slot.faceW, windowH))
-                val meanCheck = MatOfDouble()
-                Core.meanStdDev(scanWin, meanCheck, MatOfDouble())
-                val m = meanCheck.get(0, 0)[0]
-                meanCheck.release()
-                scanWin.release()
-                if (m > 80.0) {
-                    actualTop = searchTop + y  // 绝对坐标
-                    break
-                }
+            val scanStep = 6  // 粗扫, 提起牌偏移通常>15px
+            for (y in 0..(searchH - slot.faceH) step scanStep) {
+                val scanWin = Mat(searchMat, Rect(0, y, slot.faceW, slot.faceH))
+                val mc = MatOfDouble()
+                Core.meanStdDev(scanWin, mc, MatOfDouble())
+                val m = mc.get(0, 0)[0]
+                mc.release(); scanWin.release()
+                if (m > 80.0) { actualTop = searchTop + y; break }
             }
             searchMat.release()
 
             if (actualTop < 0) {
-                // 整个搜索窗口都没牌 → 真正空位(舍牌/吃碰后)
                 emptySlots.add(i)
                 FLog.i("TileMatcher", "  slot[$i]: 空位(无牌)")
                 continue
             }
 
-            // 用实际位置截取牌面做识别
-            val tileMat = Mat(gray, Rect(slot.faceLeft, actualTop, slot.faceW, slot.faceH))
-            val (tileId, score) = matchSingleTile(tileMat)
-            tileMat.release()
-
+            val liftedMat = Mat(gray, Rect(slot.faceLeft, actualTop, slot.faceW, slot.faceH))
+            val (tileId, score) = matchSingleTile(liftedMat)
+            liftedMat.release()
             if (tileId >= 0) {
                 results.add(MatchResult(tileId, score, score < 0.70))
                 actualFaceTops.add(Triple(i, actualTop, tileId))
-                val liftNote = if (actualTop < slot.faceTop - 10) " ↑提起" else ""
-                FLog.i("TileMatcher", "  slot[$i]: ${Tiles.name(tileId)} (${"%.3f".format(score)}) y=$actualTop$liftNote")
+                FLog.i("TileMatcher", "  slot[$i]: ${Tiles.name(tileId)} (${"%.3f".format(score)}) y=$actualTop ↑提起")
             }
         }
 
