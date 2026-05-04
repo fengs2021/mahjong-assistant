@@ -703,22 +703,20 @@ class OverlayService : Service() {
                 lastConfidences = confidences
                 lastScreenshotPath = ssPath
 
-                // 检测提起的牌: 对比当前vs上一帧手牌
-                if (tileIds.isNotEmpty() && prevHandTiles.isNotEmpty()) {
-                    val missing = prevHandTiles.filter { pt -> tileIds.none { it == pt } }
-                    val lifted = missing.groupBy { it }.map { (tid, list) -> tid to list.size }
-                    if (lifted.isNotEmpty()) {
-                        val safety = DefenseAnalyzer.analyzeBasic(prevHandTiles)
-                        val sb = StringBuilder()
-                        for ((tid, cnt) in lifted) {
-                            val sr = DefenseAnalyzer.dangerOf(tid, safety)
-                            val emoji = sr?.let { DefenseAnalyzer.safetyEmoji(it.dangerLevel) } ?: ""
-                            val name = if (tid in 0..33) Tiles.name(tid) else "?"
-                            sb.append("提起${name} $emoji ")
-                        }
-                        dangerLabel.text = sb.toString().trim()
-                        dangerLabel.visibility = View.VISIBLE
+                // 检测提起的牌: 从截图识别结果直读(纵向偏移>15px)
+                val liftedTileIds = intent.getIntArrayExtra("lifted_tile_ids") ?: IntArray(0)
+                if (liftedTileIds.isNotEmpty()) {
+                    val safety = DefenseAnalyzer.analyzeBasic(tileIds)
+                    val sb = StringBuilder()
+                    for (tid in liftedTileIds) {
+                        if (tid !in 0..33) continue
+                        val sr = DefenseAnalyzer.dangerOf(tid, safety)
+                        val emoji = sr?.let { DefenseAnalyzer.safetyEmoji(it.dangerLevel) } ?: ""
+                        val name = Tiles.name(tid)
+                        sb.append("提起$name $emoji ")
                     }
+                    dangerLabel.text = sb.toString().trim()
+                    dangerLabel.visibility = View.VISIBLE
                 }
 
                 // 更新牌型显示

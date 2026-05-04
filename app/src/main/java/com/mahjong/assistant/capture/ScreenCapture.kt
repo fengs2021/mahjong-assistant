@@ -83,7 +83,8 @@ object TileMatcher {
     private var opencvReady = false
 
     @Volatile var lastLog: String = ""
-    @Volatile var lastEmptySlots: List<Int> = emptyList()  // 空位slot索引(提起的牌)
+    @Volatile var lastEmptySlots: List<Int> = emptyList()  // 提起牌slot索引(纵向偏移>15px)
+    @Volatile var lastLiftedTileIds: IntArray = IntArray(0)  // 提起牌的牌种ID(与上面对应)
 
     // ─── tileId映射 (兼容简繁体文件名) ───
     private val nameToId = mapOf(
@@ -395,6 +396,10 @@ object TileMatcher {
 
         val results = mutableListOf<MatchResult>()
         val emptySlots = mutableListOf<Int>()
+        val actualFaceTops = mutableListOf<Triple<Int, Int, Int>>()  // (slotIndex, actualFaceTop, tileId)
+
+        // 提起牌搜索: 向上扩展60px, 垂直扫描找到牌的实际顶部
+        val searchUpPx = 60
 
         // 主手牌 13张
         for ((i, slot) in mainHandSlots.withIndex()) {
@@ -402,27 +407,61 @@ object TileMatcher {
             val faceBottom = slot.faceTop + slot.faceH
             if (faceRight > gray.cols() || faceBottom > gray.rows()) continue
 
-            val tileMat = Mat(gray, Rect(slot.faceLeft, slot.faceTop, slot.faceW, slot.faceH))
-            // 亮度检测: 空位(桌面背景 mean~56, 有牌mean~119+)
-            val meanCheck = MatOfDouble()
-            Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
-            val hasTile = meanCheck.get(0, 0)[0] > 80.0
-            meanCheck.release()
-            if (!hasTile) {
+            // 向上扩展搜索窗口
+            val searchTop = maxOf(0, slot.faceTop - searchUpPx)
+            val searchH = slot.faceH + (slot.faceTop - searchTop)  // 原高度 + 向上扩展量
+            val searchRight = searchTop + searchH
+            if (searchRight > gray.rows()) continue
+            if (slot.faceLeft + slot.faceW > gray.cols()) continue
+
+            val searchMat = Mat(gray, Rect(slot.faceLeft, searchTop, slot.faceW, searchH))
+
+            // 垂直扫描: 从顶部向下, 找牌的上边缘(亮度突变点)
+            var actualTop = -1
+            val scanStep = 3
+            val windowH = slot.faceH
+            for (y in 0..(searchH - windowH) step scanStep) {
+                val scanWin = Mat(searchMat, Rect(0, y, slot.faceW, windowH))
+                val meanCheck = MatOfDouble()
+                Core.meanStdDev(scanWin, meanCheck, MatOfDouble())
+                val m = meanCheck.get(0, 0)[0]
+                meanCheck.release()
+                scanWin.release()
+                if (m > 80.0) {
+                    actualTop = searchTop + y  // 绝对坐标
+                    break
+                }
+            }
+            searchMat.release()
+
+            if (actualTop < 0) {
+                // 整个搜索窗口都没牌 → 真正空位(舍牌/吃碰后)
                 emptySlots.add(i)
-                FLog.i("TileMatcher", "  slot[$i]: 空位(提起)")
-                tileMat.release()
+                FLog.i("TileMatcher", "  slot[$i]: 空位(无牌)")
                 continue
             }
+
+            // 用实际位置截取牌面做识别
+            val tileMat = Mat(gray, Rect(slot.faceLeft, actualTop, slot.faceW, slot.faceH))
             val (tileId, score) = matchSingleTile(tileMat)
             tileMat.release()
 
             if (tileId >= 0) {
                 results.add(MatchResult(tileId, score, score < 0.70))
-                FLog.i("TileMatcher", "  slot[$i]: ${Tiles.name(tileId)} (${"%.3f".format(score)})")
+                actualFaceTops.add(Triple(i, actualTop, tileId))
+                val liftNote = if (actualTop < slot.faceTop - 10) " ↑提起" else ""
+                FLog.i("TileMatcher", "  slot[$i]: ${Tiles.name(tileId)} (${"%.3f".format(score)}) y=$actualTop$liftNote")
             }
         }
-        lastEmptySlots = emptySlots.toList()
+
+        // 判断提起的牌: 实际faceTop明显高于基准(低15px以上)
+        val baseFaceTop = 1106  // 手牌固定基准y
+        val liftedSlots = actualFaceTops.filter { (_, y, _) -> baseFaceTop - y > 15 }
+            .map { it.first }
+        val liftedTileIds = actualFaceTops.filter { (_, y, _) -> baseFaceTop - y > 15 }
+            .map { it.third }
+        lastEmptySlots = liftedSlots.toList()
+        lastLiftedTileIds = liftedTileIds.toIntArray()
 
         // 摸牌: 副露时手牌减少, 摸牌位置左移
         // 动态计算摸牌位置: 最后一张手牌右边 + 间距(43px)

@@ -159,6 +159,7 @@ class ScreenCaptureService : AccessibilityService() {
             putExtra("tile_ids", tileIds)
             putExtra("confidences", confidences)
             putExtra("log", TileMatcher.lastLog)
+            putExtra("lifted_tile_ids", TileMatcher.lastLiftedTileIds)
             if (ssPath != null) putExtra("screenshot_path", ssPath)
         }
         startService(intent)
