@@ -396,8 +396,15 @@ object TileMatcher {
         Imgproc.cvtColor(srcMat, gray, Imgproc.COLOR_RGBA2GRAY)
         srcMat.release()
 
-        val detectedFaceY = detectHandY(gray)
-        val detectedFaceH = minOf(gray.rows() - detectedFaceY, 143)
+        // detectHandY返回纹理最丰富行(牌面中心), 减去半高得到faceTop
+        val texCenterY = detectHandY(gray)
+        val (detectedFaceY, detectedFaceH) = if (texCenterY < 0) {
+            // 低方差 → 没有牌面纹理 → fallback默认坐标
+            Pair(1106, 143)
+        } else {
+            val faceY = (texCenterY - 71).coerceIn(0, gray.rows() - 143)
+            Pair(faceY, 143)
+        }
         lastHandY = detectedFaceY; lastHandH = detectedFaceH
 
         val results = mutableListOf<MatchResult>()
@@ -574,8 +581,9 @@ object TileMatcher {
     }
 
     /**
-     * 自适应检测手牌行 y 坐标 (faceTop)
+     * 自适应检测手牌行 y 坐标 (纹理中心行, 非牌面顶部)
      * 扫描 y=1000~1280 范围, 找灰度水平方差最大的行 — 牌面纹理丰富方差高
+     * @return 纹理中心行y, 或-1表示未检测到牌面(方差<20则fallback默认坐标)
      */
     private fun detectHandY(gray: Mat): Int {
         val imgW = gray.cols()
@@ -595,7 +603,12 @@ object TileMatcher {
             band.release(); m.release(); s.release()
             if (std > bestStd) { bestStd = std; bestY = y }
         }
-FLog.i("TileMatcher", "detectHandY: y=$bestY (std=${String.format("%.1f", bestStd)})")
+        // 方差<20 = 无牌面纹理(桌面/空白区域), 返回-1触发fallback
+        if (bestStd < 20.0) {
+            FLog.i("TileMatcher", "detectHandY: 无牌面纹理(std=${String.format("%.1f",bestStd)}), fallback默认坐标")
+            return -1
+        }
+FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f", bestStd)})")
         return bestY
     }
 
@@ -640,12 +653,24 @@ FLog.i("TileMatcher", "detectHandY: y=$bestY (std=${String.format("%.1f", bestSt
             val (handTop, handH) = cfg
             if (handH < 30) continue
 
-            val roiRaw = Mat(gray, Rect(0, handTop, imgW, handH))
-            val roi = Mat()
-            clahe.apply(roiRaw, roi)
-            roiRaw.release()
+            // 降采样: ROI高度>250px时缩小到200px, 避免主线程卡死(fullImageScan是同步的)
+            val downsample = if (handH > 250) handH.toDouble() / 200.0 else 1.0
+            val scanH = if (downsample > 1.0) 200 else handH
+            val scanW = (imgW / downsample).toInt()
 
-            FLog.i("TileMatcher", "ROI#$idx: handTop=$handTop handH=$handH imgW=$imgW imgH=$imgH")
+            val roiRaw = Mat(gray, Rect(0, handTop, imgW, handH))
+            val roiSmall = Mat()
+            if (downsample > 1.0) {
+                Imgproc.resize(roiRaw, roiSmall, Size(scanW.toDouble(), scanH.toDouble()))
+            } else {
+                roiRaw.copyTo(roiSmall)
+            }
+            roiRaw.release()
+            val roi = Mat()
+            clahe.apply(roiSmall, roi)
+            roiSmall.release()
+
+            FLog.i("TileMatcher", "ROI#$idx: handTop=$handTop handH=$handH→scanH=$scanH downsample=${\"%.1f\".format(downsample)}")
 
             val hits = mutableListOf<Hit>()
             val allBestScores = mutableMapOf<Int, Double>()
@@ -655,8 +680,8 @@ FLog.i("TileMatcher", "detectHandY: y=$bestY (std=${String.format("%.1f", bestSt
                 val th = getThreshold(tileId)
                 val tH = template.rows().toDouble()
                 val tW = template.cols().toDouble()
-                // 牌面高度不可能超过200px, cap避免副露高ROI时targetScale过大
-                val targetScale = minOf(handH.toDouble(), 200.0) / tH
+                // 同步降采样模板: targetScale基于降采样后的尺寸
+                val targetScale = minOf(scanH.toDouble(), 200.0) / tH
                 val perTemplateScales = DoubleArray(13) { i -> targetScale * (0.70 + i * 0.05) }
 
                 var bestScore = 0.0
@@ -693,8 +718,8 @@ FLog.i("TileMatcher", "detectHandY: y=$bestY (std=${String.format("%.1f", bestSt
             android.util.Log.i(TAG, "ROI#$idx ALL34: $allScoresStr")
 
             if (hits.isEmpty()) {
-                FLog.w("TileMatcher", "ROI#$idx 无结果, 尝试下一区域")
-                continue
+                FLog.w("TileMatcher", "ROI#$idx 无结果, 放弃(不继续更大ROI)")
+                break  // 不继续更大ROI — 越大越慢, 卡死风险更高
             }
 
             val sorted = hits.sortedBy { it.x }
