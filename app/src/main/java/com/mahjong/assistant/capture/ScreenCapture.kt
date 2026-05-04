@@ -336,6 +336,21 @@ object TileMatcher {
 
     private fun recognizeImpl(screenshot: Bitmap): Pair<List<MatchResult>, Double> {
         FLog.i("TileMatcher", "recognizeImpl start ${screenshot.width}x${screenshot.height}")
+
+        // ── YOLO 优先 (替换模板匹配) ──
+        if (TileDetector.loaded) {
+            val yoloResults = TileDetector.detect(screenshot)
+            if (yoloResults.size >= 13) {
+                val reliableCount = yoloResults.count { !it.needsCheck }
+                val overallConfidence = if (yoloResults.isNotEmpty()) reliableCount.toDouble() / yoloResults.size else 0.0
+                val handStr = Tiles.toDisplayString(yoloResults.map { it.tileId }.toIntArray())
+                lastLog = "截图: ${screenshot.width}×${screenshot.height}\n" +
+                    "YOLO: ${yoloResults.size}张 | 高置信${reliableCount}张\n手牌: $handStr"
+                return Pair(yoloResults, overallConfidence)
+            }
+            FLog.w("TileMatcher", "YOLO仅${yoloResults.size}张, 回退模板匹配")
+        }
+
         if (!templatesLoaded) {
             lastLog = "模板未加载"
             return Pair(emptyList(), -1.0)

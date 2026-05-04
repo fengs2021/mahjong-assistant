@@ -105,6 +105,8 @@ class OverlayService : Service() {
             FLog.i("OverlaySvc", "dpi=$screenDpi")
             val tmOk = TileMatcher.init(this)
             FLog.i("OverlaySvc", "TileMatcher.init=$tmOk diag=${TileMatcher.getDiagnostic()}")
+            TileDetector.init(this)  // 异步加载 YOLO 模型
+            FLog.i("OverlaySvc", "TileDetector.loaded=${TileDetector.loaded}")
             checkMajsoulPackage()
             createNotificationChannel()
             // Android 15 禁止普通 App 在 startForeground 声明 mediaProjection
