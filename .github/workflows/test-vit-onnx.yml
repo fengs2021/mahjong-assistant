@@ -74,6 +74,8 @@ jobs:
           # 模板匹配的 ground truth (从日志)
           GT = ['1b','7b','9b','2p','2p','3p','6p','8p','5n','6n','ew','wd']
           
+          id2label = model.config.id2label
+          
           print(f"\n{'slot':>4} {'gt':>3} {'pred':>4} {'conf':>6} {'match'}")
           correct = 0
           for slot in range(12):
