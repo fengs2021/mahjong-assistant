@@ -75,6 +75,11 @@ jobs:
           GT = ['1b','7b','9b','2p','2p','3p','6p','8p','5n','6n','ew','wd']
           
           id2label = model.config.id2label
+          if not id2label or len(id2label) < 34:
+              # Transformer可能因为num_labels=null没加载id2label
+              import json, requests
+              cfg = requests.get(f"https://huggingface.co/{model_id}/raw/main/config.json").json()
+              id2label = cfg.get("id2label", {})
           
           print(f"\n{'slot':>4} {'gt':>3} {'pred':>4} {'conf':>6} {'match'}")
           correct = 0
