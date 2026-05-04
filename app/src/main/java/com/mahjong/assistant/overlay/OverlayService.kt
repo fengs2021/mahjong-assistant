@@ -15,7 +15,6 @@ import androidx.core.app.NotificationCompat
 import com.mahjong.assistant.R
 import com.mahjong.assistant.ReviewActivity
 import com.mahjong.assistant.capture.ScreenCaptureService
-import com.mahjong.assistant.capture.TileDetector
 import com.mahjong.assistant.capture.TileMatcher
 import com.mahjong.assistant.engine.DefenseAnalyzer
 import com.mahjong.assistant.engine.Efficiency
@@ -106,8 +105,6 @@ class OverlayService : Service() {
             FLog.i("OverlaySvc", "dpi=$screenDpi")
             val tmOk = TileMatcher.init(this)
             FLog.i("OverlaySvc", "TileMatcher.init=$tmOk diag=${TileMatcher.getDiagnostic()}")
-            TileDetector.init(this)  // 异步加载 YOLO 模型
-            FLog.i("OverlaySvc", "TileDetector.loaded=${TileDetector.loaded}")
             checkMajsoulPackage()
             createNotificationChannel()
             // Android 15 禁止普通 App 在 startForeground 声明 mediaProjection
