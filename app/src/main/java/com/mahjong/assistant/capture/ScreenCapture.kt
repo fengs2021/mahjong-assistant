@@ -83,8 +83,7 @@ object TileMatcher {
     private var opencvReady = false
 
     @Volatile var lastLog: String = ""
-    @Volatile var lastEmptySlots: List<Int> = emptyList()  // 提起牌slot索引(纵向偏移>15px)
-    @Volatile var lastLiftedTileIds: IntArray = IntArray(0)  // 提起牌的牌种ID(与上面对应)
+    @Volatile var lastEmptySlots: List<Int> = emptyList()  // 空位slot索引(提起的牌)
 
     // ─── tileId映射 (兼容简繁体文件名) ───
     private val nameToId = mapOf(
@@ -396,8 +395,6 @@ object TileMatcher {
 
         val results = mutableListOf<MatchResult>()
         val emptySlots = mutableListOf<Int>()
-        val actualFaceTops = mutableListOf<Triple<Int, Int, Int>>()  // (slotIndex, actualFaceTop, tileId)
-        val searchUpPx = 60  // 提起牌向上搜索范围
 
         // 主手牌 13张
         for ((i, slot) in mainHandSlots.withIndex()) {
@@ -405,69 +402,27 @@ object TileMatcher {
             val faceBottom = slot.faceTop + slot.faceH
             if (faceRight > gray.cols() || faceBottom > gray.rows()) continue
 
-            // 1. 先检查固定位置 (快速路径, 99%情况)
             val tileMat = Mat(gray, Rect(slot.faceLeft, slot.faceTop, slot.faceW, slot.faceH))
+            // 亮度检测: 空位(桌面背景 mean~56, 有牌mean~119+)
             val meanCheck = MatOfDouble()
             Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
-            val hasTileAtDefault = meanCheck.get(0, 0)[0] > 80.0
+            val hasTile = meanCheck.get(0, 0)[0] > 80.0
             meanCheck.release()
-
-            if (hasTileAtDefault) {
-                // 固定位置有牌 → 直接识别, 不扫描
-                val (tileId, score) = matchSingleTile(tileMat)
+            if (!hasTile) {
+                emptySlots.add(i)
+                FLog.i("TileMatcher", "  slot[$i]: 空位(提起)")
                 tileMat.release()
-                if (tileId >= 0) {
-                    results.add(MatchResult(tileId, score, score < 0.70))
-                    actualFaceTops.add(Triple(i, slot.faceTop, tileId))
-                }
                 continue
             }
+            val (tileId, score) = matchSingleTile(tileMat)
             tileMat.release()
 
-            // 2. 固定位置没牌 → 向上搜索提起的牌 (慢路径, 仅提起时触发)
-            val searchTop = maxOf(0, slot.faceTop - searchUpPx)
-            val searchH = slot.faceH + (slot.faceTop - searchTop)
-            val searchBottom = searchTop + searchH
-            if (searchBottom > gray.rows()) { emptySlots.add(i); continue }
-            if (slot.faceLeft + slot.faceW > gray.cols()) { emptySlots.add(i); continue }
-
-            val searchMat = Mat(gray, Rect(slot.faceLeft, searchTop, slot.faceW, searchH))
-            var actualTop = -1
-            val scanStep = 6  // 粗扫, 提起牌偏移通常>15px
-            for (y in 0..(searchH - slot.faceH) step scanStep) {
-                val scanWin = Mat(searchMat, Rect(0, y, slot.faceW, slot.faceH))
-                val mc = MatOfDouble()
-                Core.meanStdDev(scanWin, mc, MatOfDouble())
-                val m = mc.get(0, 0)[0]
-                mc.release(); scanWin.release()
-                if (m > 80.0) { actualTop = searchTop + y; break }
-            }
-            searchMat.release()
-
-            if (actualTop < 0) {
-                emptySlots.add(i)
-                FLog.i("TileMatcher", "  slot[$i]: 空位(无牌)")
-                continue
-            }
-
-            val liftedMat = Mat(gray, Rect(slot.faceLeft, actualTop, slot.faceW, slot.faceH))
-            val (tileId, score) = matchSingleTile(liftedMat)
-            liftedMat.release()
             if (tileId >= 0) {
                 results.add(MatchResult(tileId, score, score < 0.70))
-                actualFaceTops.add(Triple(i, actualTop, tileId))
-                FLog.i("TileMatcher", "  slot[$i]: ${Tiles.name(tileId)} (${"%.3f".format(score)}) y=$actualTop ↑提起")
+                FLog.i("TileMatcher", "  slot[$i]: ${Tiles.name(tileId)} (${"%.3f".format(score)})")
             }
         }
-
-        // 判断提起的牌: 实际faceTop明显高于基准(低15px以上)
-        val baseFaceTop = 1106  // 手牌固定基准y
-        val liftedSlots = actualFaceTops.filter { (_, y, _) -> baseFaceTop - y > 15 }
-            .map { it.first }
-        val liftedTileIds = actualFaceTops.filter { (_, y, _) -> baseFaceTop - y > 15 }
-            .map { it.third }
-        lastEmptySlots = liftedSlots.toList()
-        lastLiftedTileIds = liftedTileIds.toIntArray()
+        lastEmptySlots = emptySlots.toList()
 
         // 摸牌: 副露时手牌减少, 摸牌位置左移
         // 动态计算摸牌位置: 最后一张手牌右边 + 间距(43px)

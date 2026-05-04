@@ -190,7 +190,7 @@ class CaptureActivity : Activity() {
             putExtra("tile_ids", tileIds)
             putExtra("confidences", confidences)
             putExtra("log", TileMatcher.lastLog)
-            putExtra("lifted_tile_ids", TileMatcher.lastLiftedTileIds)
+            putExtra("lifted_tile_ids", IntArray(0))  // 占位, 实际由OverlayService帧对比检测
             if (ssPath != null) putExtra("screenshot_path", ssPath)
         }
         startService(intent)

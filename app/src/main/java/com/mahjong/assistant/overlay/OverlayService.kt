@@ -703,20 +703,22 @@ class OverlayService : Service() {
                 lastConfidences = confidences
                 lastScreenshotPath = ssPath
 
-                // 检测提起的牌: 从截图识别结果直读(纵向偏移>15px)
-                val liftedTileIds = intent.getIntArrayExtra("lifted_tile_ids") ?: IntArray(0)
-                if (liftedTileIds.isNotEmpty()) {
-                    val safety = DefenseAnalyzer.analyzeBasic(tileIds)
-                    val sb = StringBuilder()
-                    for (tid in liftedTileIds) {
-                        if (tid !in 0..33) continue
-                        val sr = DefenseAnalyzer.dangerOf(tid, safety)
-                        val emoji = sr?.let { DefenseAnalyzer.safetyEmoji(it.dangerLevel) } ?: ""
-                        val name = Tiles.name(tid)
-                        sb.append("提起$name $emoji ")
+                // 检测提起的牌: 对比当前帧vs上一帧, 消失的牌=提起的牌
+                if (tileIds.isNotEmpty() && prevHandTiles.isNotEmpty() && tileIds.size < prevHandTiles.size) {
+                    val missing = prevHandTiles.filter { pt -> tileIds.none { it == pt } }
+                    if (missing.isNotEmpty()) {
+                        val safety = DefenseAnalyzer.analyzeBasic(prevHandTiles)
+                        val sb = StringBuilder()
+                        for (tid in missing) {
+                            if (tid !in 0..33) continue
+                            val sr = DefenseAnalyzer.dangerOf(tid, safety)
+                            val emoji = sr?.let { DefenseAnalyzer.safetyEmoji(it.dangerLevel) } ?: ""
+                            val name = Tiles.name(tid)
+                            sb.append("提起$name $emoji ")
+                        }
+                        dangerLabel.text = sb.toString().trim()
+                        dangerLabel.visibility = View.VISIBLE
                     }
-                    dangerLabel.text = sb.toString().trim()
-                    dangerLabel.visibility = View.VISIBLE
                 }
 
                 // 更新牌型显示
