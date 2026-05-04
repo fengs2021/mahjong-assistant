@@ -92,8 +92,13 @@ object TileDetector {
             val srcMat = Mat()
             Utils.bitmapToMat(screenshot, srcMat)
 
+            // RGBA → BGR (YOLO需要3通道, swapRB=true时会翻成RGB)
+            val bgrMat = Mat()
+            Imgproc.cvtColor(srcMat, bgrMat, Imgproc.COLOR_RGBA2BGR)
+            srcMat.release()
+
             // 裁剪手牌ROI
-            val roi = Mat(srcMat, handROI)
+            val roi = Mat(bgrMat, handROI)
             val resized = Mat()
             Imgproc.resize(roi, resized, Size(INPUT_SIZE.toDouble(), INPUT_SIZE.toDouble()))
 
@@ -113,7 +118,7 @@ object TileDetector {
 
             resized.release()
             roi.release()
-            srcMat.release()
+            bgrMat.release()
 
             // 推理 (反射调用 setInput + forward)
             val nn = net ?: return emptyList()
