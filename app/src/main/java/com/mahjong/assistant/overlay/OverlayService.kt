@@ -412,12 +412,12 @@ class OverlayService : Service() {
         // 推荐 (内联前2) + 安全标注
         if (advice.isNotEmpty()) {
             val best = advice[0]
-            val bestSafe = DefenseAnalyzer.dangerOf(best.tileId, safety)
+            val bestSafe = DefenseAnalyzer.dangerOf(best.tile, safety)
             val safeEmoji = bestSafe?.let { DefenseAnalyzer.safetyEmoji(it.dangerLevel) } ?: ""
             val sb = StringBuilder("🏆 切${best.tileName} 进${best.ukeire}枚 $safeEmoji")
             if (advice.size >= 2) {
                 val second = advice[1]
-                val secondSafe = DefenseAnalyzer.dangerOf(second.tileId, safety)
+                val secondSafe = DefenseAnalyzer.dangerOf(second.tile, safety)
                 val sEmoji = secondSafe?.let { DefenseAnalyzer.safetyEmoji(it.dangerLevel) } ?: ""
                 sb.append("\n次切${second.tileName} $sEmoji")
             }
