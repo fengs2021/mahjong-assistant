@@ -396,15 +396,10 @@ object TileMatcher {
         Imgproc.cvtColor(srcMat, gray, Imgproc.COLOR_RGBA2GRAY)
         srcMat.release()
 
-        // detectHandY返回纹理最丰富行(牌面中心), 减去半高得到faceTop
-        val texCenterY = detectHandY(gray)
-        val (detectedFaceY, detectedFaceH) = if (texCenterY < 0) {
-            // 低方差 → 没有牌面纹理 → fallback默认坐标
-            Pair(1106, 143)
-        } else {
-            val faceY = (texCenterY - 71).coerceIn(0, gray.rows() - 143)
-            Pair(faceY, 143)
-        }
+        // 优先使用标定坐标(模板采集坐标, Python验证0.995+)
+        // auto-detect仅作备用: texCenter-71偏差27-47px导致匹配分暴跌至0.1-0.5
+        val detectedFaceY = 1106
+        val detectedFaceH = 143
         lastHandY = detectedFaceY; lastHandH = detectedFaceH
 
         val results = mutableListOf<MatchResult>()
@@ -490,10 +485,15 @@ object TileMatcher {
             }
         }
 
-        // 自适应坐标全空 → 用默认坐标重试
-        if (results.isEmpty() && emptySlots.size >= 13 && detectedFaceY != 1106) {
-            FLog.i("TileMatcher", "  retry with default coords (1106,143)")
-            val retryFaceY = 1106; val retryFaceH = 143
+        // 固定坐标全空 → auto-detect重试
+        if (results.isEmpty() && emptySlots.size == 13) {
+            FLog.i("TileMatcher", "  retry with auto-detect coords")
+            val retryFaceY = detectHandY(gray).let { if (it < 0) 1106 else (it - 71).coerceIn(0, gray.rows() - 143) }
+            val retryFaceH = 143
+            if (retryFaceY == 1106) {
+                FLog.i("TileMatcher", "  retry skipped: auto-detect=1106 (same as primary)")
+            } else {
+            FLog.i("TileMatcher", "  retry faceY=$retryFaceY")
             for ((i, slot) in mainHandSlots.withIndex()) {
                 val faceRight = slot.faceLeft + slot.faceW
                 if (faceRight > gray.cols() || retryFaceY + retryFaceH > gray.rows()) continue
@@ -509,6 +509,7 @@ object TileMatcher {
                     results.add(MatchResult(tileId, score, score < 0.70))
                     FLog.i("TileMatcher", "  retry slot[$i]: ${Tiles.name(tileId)} (${"%.3f".format(score)})")
                 }
+            }
             }
         }
 
@@ -765,6 +766,7 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
             gray.release(); srcMat.release()
             FLog.i("TileMatcher", "fullImageScan done: ${final.size} final (ROI#$idx)")
             return final.map { MatchResult(it.tileId, it.score, it.score < 0.55) }
+            }
         }
 
         gray.release(); srcMat.release()
