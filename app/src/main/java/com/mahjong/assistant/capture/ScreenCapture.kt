@@ -766,7 +766,6 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
             gray.release(); srcMat.release()
             FLog.i("TileMatcher", "fullImageScan done: ${final.size} final (ROI#$idx)")
             return final.map { MatchResult(it.tileId, it.score, it.score < 0.55) }
-            }
         }
 
         gray.release(); srcMat.release()
