@@ -670,7 +670,7 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
             clahe.apply(roiSmall, roi)
             roiSmall.release()
 
-            FLog.i("TileMatcher", "ROI#$idx: handTop=$handTop handH=$handH→scanH=$scanH downsample=${\"%.1f\".format(downsample)}")
+            FLog.i("TileMatcher", "ROI#$idx: handTop=$handTop handH=$handH→scanH=$scanH downsample=" + String.format("%.1f", downsample))
 
             val hits = mutableListOf<Hit>()
             val allBestScores = mutableMapOf<Int, Double>()
