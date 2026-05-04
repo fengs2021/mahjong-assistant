@@ -12,6 +12,14 @@ import org.opencv.imgproc.Imgproc
 import java.io.*
 
 /**
+ * YOLO检测结果 — bounding box + 类别
+ */
+private data class Detection(
+    val x: Float, val y: Float, val w: Float, val h: Float,
+    val classId: Int, val conf: Float
+)
+
+/**
  * YOLOv8 牌面检测器 — 替换模板匹配
  *
  * 模型: YOLOv8n, 34类(万/筒/索/字), ONNX导出
@@ -97,10 +105,10 @@ object TileDetector {
         output.release()
 
         // 按x坐标排序 (从左到右 = 手牌顺序)
-        detections.sortBy { d -> d.x }
+        val sorted = detections.sortedBy { it.x }
 
         // 转换为 MatchResult
-        val results = detections.map { det ->
+        val results = sorted.map { det ->
             TileMatcher.MatchResult(det.classId, det.conf.toDouble(), det.conf < 0.7)
         }
 
@@ -109,11 +117,6 @@ object TileDetector {
     }
 
     // ─── YOLOv8 输出解码 ───
-
-    private data class Detection(
-        val x: Float, val y: Float, val w: Float, val h: Float,
-        val classId: Int, val conf: Float
-    )
 
     private fun decodeYoloOutput(output: Mat): List<Detection> {
         // output shape: [1, 38, 8400]
