@@ -497,10 +497,15 @@ class OverlayService : Service() {
         }
         val svc = ScreenCaptureService.instance
         if (svc != null) {
-            FLog.i("OverlaySvc", "onCapture → AccessibilityService")
+            FLog.i("OverlaySvc", "onCapture → A11y")
             svc.captureAndRecognize()
-        } else if (!ScreenCaptureService.isEnabled(this)) {
-            ScreenCaptureService.openSettings(this)
+        } else {
+            // 无障碍不可用 → 走 MediaProjection
+            FLog.i("OverlaySvc", "onCapture → CaptureActivity (A11y null)")
+            val intent = Intent(this, CaptureActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
         }
     }
 
