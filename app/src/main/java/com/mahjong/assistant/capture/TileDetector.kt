@@ -6,8 +6,6 @@ import com.mahjong.assistant.engine.Tiles
 import com.mahjong.assistant.util.FLog
 import org.opencv.android.Utils
 import org.opencv.core.*
-import org.opencv.dnn.Dnn
-import org.opencv.dnn.Net
 import org.opencv.imgproc.Imgproc
 import java.io.*
 
@@ -36,26 +34,41 @@ object TileDetector {
     // 手牌ROI坐标 (PPG-AN00 2800×1264)
     private val handROI = Rect(536, 1106, 1443, 143)  // 13×111+间距
 
-    @Volatile private var net: Net? = null
+    @Volatile private var net: Any? = null  // Net 类型延迟引用, 避免类加载时JNI崩溃
     @Volatile var loaded = false
 
     fun init(context: Context) {
         if (loaded) return
         try {
+            android.util.Log.i(TAG, "TileDetector.init start")
             val modelFile = File(context.filesDir, "mahjong_hand.onnx")
+            android.util.Log.i(TAG, "modelFile exists=${modelFile.exists()} path=${modelFile.absolutePath}")
+            
             if (!modelFile.exists()) {
                 // 从 assets 复制到 filesDir (OpenCV DNN 需要文件路径)
-                context.assets.open("mahjong_hand.onnx").use { input ->
-                    FileOutputStream(modelFile).use { output ->
-                        input.copyTo(output)
-                    }
-                }
+                val input = context.assets.open("mahjong_hand.onnx")
+                val output = FileOutputStream(modelFile)
+                val copied = input.copyTo(output)
+                input.close(); output.close()
+                android.util.Log.i(TAG, "copied ${copied} bytes from assets")
             }
-            net = Dnn.readNetFromONNX(modelFile.absolutePath)
+            android.util.Log.i(TAG, "model size=${modelFile.length()}")
+            
+            // 延迟引用 Dnn 类, 避免静态初始化崩溃
+            val dnnClass = Class.forName("org.opencv.dnn.Dnn")
+            val readNetMethod = dnnClass.getMethod("readNetFromONNX", String::class.java)
+            net = readNetMethod.invoke(null, modelFile.absolutePath)
+            
             loaded = true
+            android.util.Log.i(TAG, "YOLO模型加载成功: ${modelFile.length() / 1024}KB")
             FLog.i(TAG, "YOLO模型加载成功: ${modelFile.length() / 1024}KB")
         } catch (e: Exception) {
+            android.util.Log.e(TAG, "YOLO模型加载失败", e)
             FLog.e(TAG, "YOLO模型加载失败: ${e.message}")
+            loaded = false
+        } catch (e: Error) {
+            android.util.Log.e(TAG, "YOLO模型加载JNI崩溃", e)
+            FLog.e(TAG, "YOLO模型加载JNI崩溃: ${e.message}")
             loaded = false
         }
     }
@@ -75,45 +88,51 @@ object TileDetector {
             return emptyList()
         }
 
-        val srcMat = Mat()
-        Utils.bitmapToMat(screenshot, srcMat)
+        try {
+            val srcMat = Mat()
+            Utils.bitmapToMat(screenshot, srcMat)
 
-        // 裁剪手牌ROI
-        val roi = Mat(srcMat, handROI)
-        val resized = Mat()
-        Imgproc.resize(roi, resized, Size(INPUT_SIZE.toDouble(), INPUT_SIZE.toDouble()))
+            // 裁剪手牌ROI
+            val roi = Mat(srcMat, handROI)
+            val resized = Mat()
+            Imgproc.resize(roi, resized, Size(INPUT_SIZE.toDouble(), INPUT_SIZE.toDouble()))
 
-        // 预处理: BGR → blob
-        val blob = Dnn.blobFromImage(
-            resized, 1.0 / 255.0,
-            Size(INPUT_SIZE.toDouble(), INPUT_SIZE.toDouble()),
-            Scalar(0.0), true, false
-        )
+            // 预处理: BGR → blob (反射调用 Dnn.blobFromImage)
+            val dnnClass = Class.forName("org.opencv.dnn.Dnn")
+            val blobFromImage = dnnClass.getMethod("blobFromImage", Mat::class.java, Double::class.java, Size::class.java, Scalar::class.java, Boolean::class.java, Boolean::class.java)
+            val blob = blobFromImage.invoke(null, resized, 1.0 / 255.0,
+                Size(INPUT_SIZE.toDouble(), INPUT_SIZE.toDouble()),
+                Scalar(0.0), true, false)
 
-        resized.release()
-        roi.release()
-        srcMat.release()
+            resized.release()
+            roi.release()
+            srcMat.release()
 
-        // 推理
-        val nn = net ?: return emptyList()
-        nn.setInput(blob)
-        val output = nn.forward()
-        blob.release()
+            // 推理 (反射调用 setInput + forward)
+            val nn = net ?: return emptyList()
+            val netClass = nn.javaClass
+            netClass.getMethod("setInput", blob!!.javaClass).invoke(nn, blob)
+            val output = netClass.getMethod("forward").invoke(nn) as Mat
+            blob.javaClass.getMethod("release").invoke(blob)
 
-        // 解码
-        val detections = decodeYoloOutput(output)
-        output.release()
+            // 解码
+            val detections = decodeYoloOutput(output)
+            output.release()
 
-        // 按x坐标排序 (从左到右 = 手牌顺序)
-        val sorted = detections.sortedBy { it.x }
+            // 按x坐标排序 (从左到右 = 手牌顺序)
+            val sorted = detections.sortedBy { it.x }
 
-        // 转换为 MatchResult
-        val results = sorted.map { det ->
-            TileMatcher.MatchResult(det.classId, det.conf.toDouble(), det.conf < 0.7)
+            val results = sorted.map { det ->
+                TileMatcher.MatchResult(det.classId, det.conf.toDouble(), det.conf < 0.7)
+            }
+
+            FLog.i(TAG, "YOLO检测: ${results.size}张 → ${Tiles.toDisplayString(results.map { it.tileId }.toIntArray())}")
+            return results
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "YOLO推理失败", e)
+            FLog.e(TAG, "YOLO推理失败: ${e.message}")
+            return emptyList()
         }
-
-        FLog.i(TAG, "YOLO检测: ${results.size}张 → ${Tiles.toDisplayString(results.map { it.tileId }.toIntArray())}")
-        return results
     }
 
     // ─── YOLOv8 输出解码 ───
