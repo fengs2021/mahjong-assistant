@@ -411,6 +411,7 @@ object TileMatcher {
         val emptySlots = mutableListOf<Int>()
 
         // 主手牌 13张 (自适应y)
+        val slotMeans = mutableListOf<String>()
         for ((i, slot) in mainHandSlots.withIndex()) {
             val faceRight = slot.faceLeft + slot.faceW
             val faceBottom = detectedFaceY + detectedFaceH
@@ -420,11 +421,12 @@ object TileMatcher {
             // 亮度检测: 空位(桌面背景 mean~56, 有牌mean~119+)
             val meanCheck = MatOfDouble()
             Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
-            val hasTile = meanCheck.get(0, 0)[0] > 80.0
+            val slotMean = meanCheck.get(0, 0)[0]
+            val hasTile = slotMean > 80.0
             meanCheck.release()
+            slotMeans.add(String.format("%.0f", slotMean))
             if (!hasTile) {
                 emptySlots.add(i)
-                FLog.i("TileMatcher", "  slot[$i]: 空位(提起)")
                 tileMat.release()
                 continue
             }
@@ -434,8 +436,11 @@ object TileMatcher {
             if (tileId >= 0) {
                 results.add(MatchResult(tileId, score, score < 0.70))
                 FLog.i("TileMatcher", "  slot[$i]: ${Tiles.name(tileId)} (${"%.3f".format(score)})")
+            } else {
+                FLog.i("TileMatcher", "  slot[$i]: 有牌(mean=${"%.0f".format(slotMean)})但匹配失败 best=${"%.3f".format(score)}")
             }
         }
+        FLog.i("TileMatcher", "  slots mean: ${slotMeans.joinToString(" ")} | faceY=$detectedFaceY faceH=$detectedFaceH empty=${emptySlots.size}")
         lastEmptySlots = emptySlots.toList()
 
         // 摸牌: 副露时手牌减少, 摸牌位置左移
@@ -482,6 +487,28 @@ object TileMatcher {
                 FLog.i("TileMatcher", "  drawn: ${Tiles.name(bestDrawnTile)} (${"%.3f".format(bestDrawnScore)}) x=$bestDrawnX")
             } else {
                 FLog.i("TileMatcher", "  drawn: 无牌(桌面背景)")
+            }
+        }
+
+        // 自适应坐标全空 → 用默认坐标重试
+        if (results.isEmpty() && emptySlots.size >= 13 && detectedFaceY != 1106) {
+            FLog.i("TileMatcher", "  retry with default coords (1106,143)")
+            val retryFaceY = 1106; val retryFaceH = 143
+            for ((i, slot) in mainHandSlots.withIndex()) {
+                val faceRight = slot.faceLeft + slot.faceW
+                if (faceRight > gray.cols() || retryFaceY + retryFaceH > gray.rows()) continue
+                val tileMat = Mat(gray, Rect(slot.faceLeft, retryFaceY, slot.faceW, retryFaceH))
+                val meanCheck = MatOfDouble()
+                Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
+                val hasTile = meanCheck.get(0, 0)[0] > 80.0
+                meanCheck.release()
+                if (!hasTile) { tileMat.release(); continue }
+                val (tileId, score) = matchSingleTileMultiDir(tileMat)
+                tileMat.release()
+                if (tileId >= 0) {
+                    results.add(MatchResult(tileId, score, score < 0.70))
+                    FLog.i("TileMatcher", "  retry slot[$i]: ${Tiles.name(tileId)} (${"%.3f".format(score)})")
+                }
             }
         }
 
