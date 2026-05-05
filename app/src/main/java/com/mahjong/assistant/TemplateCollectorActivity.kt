@@ -242,7 +242,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
             // Spinner: 坐标Tab用区域名, 其他用牌名
             val spinner = Spinner(this).apply {
-                val options = if (currentTab == "coord") mutableListOf("自家手牌","自家摸牌","自家河底","对家","上家","下家","牌河全图") else mutableListOf("未识别").also { it.addAll(tileNames) }
+                val options = if (currentTab == "coord") mutableListOf("自家手牌","自家摸牌","自家牌河","对家牌河","上家牌河","下家牌河","全图") else mutableListOf("未识别").also { it.addAll(tileNames) }
                 adapter = ArrayAdapter(this@TemplateCollectorActivity, android.R.layout.simple_spinner_dropdown_item, options)
                 setBackgroundColor(0xFF2D3A2D.toInt()); setPopupBackgroundDrawable(ColorDrawable(0xFF1A2E1A.toInt()))
                 if (ann.label !in listOf("未识别","未知") && options.contains(ann.label)) setSelection(options.indexOf(ann.label))
