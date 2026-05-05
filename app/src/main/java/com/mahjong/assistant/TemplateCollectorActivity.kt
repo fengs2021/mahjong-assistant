@@ -191,6 +191,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 btnAddAnn.parent?.let { (it as View).visibility = View.VISIBLE }
                 annContainer.visibility = View.VISIBLE
                 slices.clear()
+            }
         }
         FLog.i("CollAct", "doSlice done: ${slices.size} slices, ${meldMarkerView.getAnnotations().size} annotations")
         statusLabel.text = "截图 ${img.width}×${img.height} — $currentTab: ${if (currentTab != "hand") "${meldMarkerView.getAnnotations().size}标" else "${slices.size}张"}"
