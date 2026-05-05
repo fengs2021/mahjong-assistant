@@ -820,7 +820,7 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
             if (meldPair.first != null) {
                 val t = meldPair.first!!; val tH = t.rows(); val tW = t.cols()
                 val eq = Mat(); clahe.apply(t, eq)
-                for (s in doubleArrayOf(0.87, 0.93, 0.97, 1.0, 1.03, 1.07)) {
+                for (s in doubleArrayOf(0.97, 1.0, 1.03)) {
                     val sw = (tW * s).toInt(); val sh = (tH * s).toInt()
                     if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
                     val rsz = Mat(); Imgproc.resize(eq, rsz, Size(sw.toDouble(), sh.toDouble()))
@@ -837,7 +837,7 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
             if (meldPair.second != null) {
                 val t = meldPair.second!!; val tH = t.rows(); val tW = t.cols()
                 val eq = Mat(); clahe.apply(t, eq)
-                for (s in doubleArrayOf(0.87, 0.93, 0.97, 1.0, 1.03, 1.07)) {
+                for (s in doubleArrayOf(0.97, 1.0, 1.03)) {
                     val sw = (tW * s).toInt(); val sh = (tH * s).toInt()
                     if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
                     val rsz = Mat(); Imgproc.resize(eq, rsz, Size(sw.toDouble(), sh.toDouble()))
