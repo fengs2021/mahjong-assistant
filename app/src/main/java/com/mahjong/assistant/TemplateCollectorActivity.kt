@@ -151,19 +151,20 @@ class TemplateCollectorActivity : AppCompatActivity() {
     private var handEndX = HAND_FACE_X; private var drawnEndX = 0
 
     private fun sliceHand(img: Bitmap) {
-        val iw = img.width; val ih = img.height; var lastMatchedX = -1; var matchedCount = 0; var emptyCount = 0
+        val iw = img.width; val ih = img.height; var lastMatchedX = -1; var lastVisibleX = -1; var matchedCount = 0; var emptyCount = 0
         for (i in 0..12) {
             val x = HAND_FACE_X + i * HAND_SLOT_GAP
             if (x + HAND_FACE_W > iw || HAND_FACE_Y + HAND_FACE_H > ih) continue
             val px = IntArray(HAND_FACE_W * HAND_FACE_H); img.getPixels(px, 0, HAND_FACE_W, x, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
             val mean = px.sumOf { (Color.red(it) + Color.green(it) + Color.blue(it)) / 3 }.toDouble() / px.size
             if (mean < 80) { emptyCount++; continue }
+            lastVisibleX = x  // 最后有牌的slot（不论是否匹配成功）
             val bmp = Bitmap.createBitmap(img, x, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
             val result = TileMatcher.identifySingleTile(bmp)
             if (result != null && result.second >= 0.85) { lastMatchedX = x; matchedCount++ }
             slices.add(TileSlice("牌${i+1}", bmp, "hand_${i}"))
         }
-        handEndX = if (lastMatchedX >= 0) lastMatchedX + HAND_FACE_W else HAND_FACE_X
+        handEndX = if (lastVisibleX >= 0) lastVisibleX + HAND_FACE_W else HAND_FACE_X
         val drawnX = handEndX + 43
         FLog.i("CollAct", "手牌: match=$matchedCount empty=$emptyCount handEndX=$handEndX drawnX=$drawnX")
         drawnEndX = 0
