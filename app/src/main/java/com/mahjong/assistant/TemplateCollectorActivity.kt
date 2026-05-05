@@ -262,6 +262,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
     // ═══════ 手牌 + 摸牌 (Phase 1+2) ═══════
     private var handEndX = HAND_FACE_X  // 供sliceMeld使用
+    private var drawnEndX = 0           // 摸牌右边界(drawnX+HW)，有摸牌时替代handEndX计算meldX
 
     private fun sliceHand(img: Bitmap) {
         val iw = img.width; val ih = img.height
@@ -295,6 +296,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
             if (mean >= 80) {
                 val bmp = Bitmap.createBitmap(img, drawnX, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
                 slices.add(TileSlice("摸牌", bmp, "hand_drawn"))
+                drawnEndX = drawnX + HAND_FACE_W
             }
         }
     }
@@ -303,7 +305,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
     private fun sliceMeld(img: Bitmap) {
         try {
             val iw = img.width; val ih = img.height
-            val meldX = handEndX + 10  // 摸牌(或手牌)后开始
+            val meldX = (if (drawnEndX > 0) drawnEndX else handEndX + HAND_FACE_W) + 10  // 摸牌后开始，跳过摸牌区
             FLog.i("CollAct", "sliceMeld start: handEndX=$handEndX meldX=$meldX iw=$iw")
             if (meldX >= iw - 20) { FLog.w("CollAct", "sliceMeld: meldX超界, meldX=$meldX iw=$iw"); return }
 
@@ -336,7 +338,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
             allSegs.sortBy { it.first }
             val merged = mutableListOf<Pair<Int,Int>>()
             for (seg in allSegs) {
-                if (merged.isEmpty() || seg.first > merged.last().second + 16)
+                if (merged.isEmpty() || seg.first > merged.last().second + 8)
                     merged.add(seg)
                 else
                     merged[merged.lastIndex] = Pair(merged.last().first, Math.max(merged.last().second, seg.second))
@@ -346,7 +348,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
             // 竖直收缩切牌
             for ((sx, ex) in merged) {
                 val cx = meldX + sx; val cw = ex - sx
-                if (cw < 8 || cw > 200) { FLog.i("CollAct", "  跳过: cw=$cw"); continue }
+                if (cw < 8 || cw > 350) { FLog.i("CollAct", "  跳过: cw=$cw"); continue }
                 var top = roiY
                 for (y in 0 until roiH) {
                     var sum = 0
@@ -478,8 +480,9 @@ class TemplateCollectorActivity : AppCompatActivity() {
         var saved = 0; var skipped = 0
         for (s in slices) {
             val name = s.label
+            if (name == "未识别" || name == "未知") { skipped++; continue }
             // 手牌/副露模板按牌名命名
-            val fileName = if ((currentTab == "meld" || currentTab == "hand") && name != "未识别" && name != "未知") {
+            val fileName = if ((currentTab == "meld" || currentTab == "hand")) {
                 val direction = if (s.bmp.width > s.bmp.height) "横" else "竖"
                 // 找第一个不重复的编号
                 var n = ""
