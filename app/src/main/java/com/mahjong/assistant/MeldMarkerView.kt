@@ -22,7 +22,7 @@ class MeldMarkerView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null, defStyle: Int = 0
 ) : View(context, attrs, defStyle) {
 
-    data class Annotation(val points: MutableList<PointF> = mutableListOf(), var label: String = "未识别") {
+    data class Annotation(val points: MutableList<PointF> = mutableListOf(), var label: String = "未识别", var direction: String = "竖") {
         val bounds: Rect get() {
             if (points.size < 4) return Rect()
             val xs = points.map { it.x }; val ys = points.map { it.y }
