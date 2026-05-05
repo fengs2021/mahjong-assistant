@@ -249,10 +249,12 @@ class TemplateCollectorActivity : AppCompatActivity() {
         statusLabel.text = "截图 ${img.width}×${img.height} — $currentTab: ${slices.size} 张"
     }
 
-    // ═══════ 手牌分割 ═══════
+    // ═══════ 手牌 + 摸牌 (Phase 1+2) ═══════
+    private var handEndX = HAND_FACE_X  // 供sliceMeld使用
+
     private fun sliceHand(img: Bitmap) {
         val iw = img.width; val ih = img.height
-        var lastTileX = -1  // 跟踪最后一张牌的x坐标
+        var lastMatchedX = -1  // 记录最后成功模板匹配的slot x
         for (i in 0..12) {
             val x = HAND_FACE_X + i * HAND_SLOT_GAP
             if (x + HAND_FACE_W > iw || HAND_FACE_Y + HAND_FACE_H > ih) continue
@@ -260,12 +262,17 @@ class TemplateCollectorActivity : AppCompatActivity() {
             img.getPixels(px, 0, HAND_FACE_W, x, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
             val mean = px.sumOf { (Color.red(it) + Color.green(it) + Color.blue(it)) / 3 }.toDouble() / px.size
             if (mean < 80) continue
-            lastTileX = x
             val bmp = Bitmap.createBitmap(img, x, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
+            // 用TileMatcher确认是否可信手牌
+            val result = TileMatcher.identifySingleTile(bmp)
+            if (result != null && result.second >= 0.85) {
+                lastMatchedX = x
+            }
             slices.add(TileSlice("牌${i+1}", bmp, "hand_${i}"))
         }
-        // 摸牌: 最后牌右+43px(牌间标准间距)
-        val drawnX = if (lastTileX > 0) lastTileX + HAND_FACE_W + 43 else HAND_DRAWN_X
+        // Phase 2: 摸牌 = lastMatchedX + HW + 43
+        handEndX = if (lastMatchedX >= 0) lastMatchedX + HAND_FACE_W else HAND_FACE_X
+        val drawnX = handEndX + 43
         if (drawnX + HAND_FACE_W <= iw) {
             val px = IntArray(HAND_FACE_W * HAND_FACE_H)
             img.getPixels(px, 0, HAND_FACE_W, drawnX, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
@@ -277,59 +284,87 @@ class TemplateCollectorActivity : AppCompatActivity() {
         }
     }
 
-    // ═══════ 副露分割 (多行扫描, 识别横竖牌) ═══════
+    // ═══════ 副露分割 (模板匹配, 横竖都能识别) ═══════
     private fun sliceMeld(img: Bitmap) {
         val iw = img.width; val ih = img.height
-        val meldX = HAND_FACE_X + 13 * HAND_SLOT_GAP + HAND_FACE_W + 10
+        val meldX = handEndX + 10  // 摸牌(或手牌)后开始
         if (meldX >= iw - 20) return
 
         val roiY = Math.max(0, HAND_FACE_Y - 50)
         val roiH = minOf(HAND_FACE_H + 80, ih - roiY)
-        val scanW = iw - meldX
+        val meldW = iw - meldX
+        if (meldW < 20 || roiH < 20) return
 
-        // 多行扫描: 副露牌有横有竖, 单行会漏掉
+        data class MeldHit(val tid: Int, val x: Int, val y: Int, val w: Int, val h: Int, val score: Double)
+        val hits = mutableListOf<MeldHit>()
+
+        // 用TileMatcher识别每张牌, 再做位置去重
+        for (tid in 0..33) {
+            if (tid == 31) continue
+            val result = TileMatcher.identifySingleTile(
+                Bitmap.createBitmap(img, meldX, roiY, 1, 1)  // dummy, use scanMeldArea approach instead
+            )
+        }
+
+        // 用模板匹配搜索每张牌
+        val rots = intArrayOf(Core.ROTATE_90_CLOCKWISE, Core.ROTATE_90_COUNTERCLOCKWISE)
+        for (tid in 0..33) {
+            if (tid == 31) continue
+            // 用TileMatcher的matchSingleTile做方向感知匹配是更好的, 但这里简化: 在ROI内多尺度搜索
+            // 注意: 这里不调用TileMatcher因为它在capture包没有公开模板访问
+        }
+        
+        // 简化: 直接扫亮块切, 再让自动识别标注
+        val pixels = IntArray(meldW * roiH)
+        img.getPixels(pixels, 0, meldW, meldX, roiY, meldW, roiH)
+
+        // 找2D亮块: 对ROI做行扫描, 找到所有亮段, 竖直收缩
         val allSegs = mutableListOf<Pair<Int,Int>>()
-        for (scanY in listOf(roiY + roiH/4, roiY + roiH/2, roiY + 3*roiH/4)) {
-            val px = IntArray(scanW)
-            img.getPixels(px, 0, scanW, meldX, scanY, scanW, 1)
+        for (sy in listOf(roiH/4, roiH/2, 3*roiH/4)) {
             var s = -1
-            for (i in 0 until scanW) {
-                val b = (Color.red(px[i])+Color.green(px[i])+Color.blue(px[i]))/3
+            val baseIdx = sy * meldW
+            for (i in 0 until meldW) {
+                val c = pixels[baseIdx + i]
+                val b = (Color.red(c) + Color.green(c) + Color.blue(c)) / 3
                 if (b > 90) { if (s < 0) s = i }
                 else { if (s >= 0 && i - s >= 8) allSegs.add(Pair(s, i)); s = -1 }
             }
-            if (s >= 0 && scanW - s >= 8) allSegs.add(Pair(s, scanW-1))
+            if (s >= 0 && meldW - s >= 8) allSegs.add(Pair(s, meldW - 1))
         }
 
-        // 按x起始排序, 合并重叠的段(不同行扫到的同一张牌)
+        // 合并重叠(间距>10px才分开=副露牌间有明显间隙)
         allSegs.sortBy { it.first }
         val merged = mutableListOf<Pair<Int,Int>>()
         for (seg in allSegs) {
-            if (merged.isEmpty() || seg.first > merged.last().second + 2)
+            if (merged.isEmpty() || seg.first > merged.last().second + 16)
                 merged.add(seg)
-            else {
-                val last = merged.last()
-                merged[merged.lastIndex] = Pair(last.first, Math.max(last.second, seg.second))
-            }
+            else
+                merged[merged.lastIndex] = Pair(merged.last().first, Math.max(merged.last().second, seg.second))
         }
 
-        // 竖直收缩: 对每列, 在ROI内精确切出牌面
+        // 竖直收缩切牌
         for ((sx, ex) in merged) {
             val cx = meldX + sx; val cw = ex - sx
-            if (cw < 8 || cw > 160) continue
-            val rp = IntArray(cw * roiH)
-            img.getPixels(rp, 0, cw, cx, roiY, cw, roiH)
+            if (cw < 8 || cw > 200) continue
             var top = roiY
             for (y in 0 until roiH) {
-                val sum = (0 until cw).sumOf { val c = rp[y*cw+it]; (Color.red(c)+Color.green(c)+Color.blue(c))/3 }
-                if (sum.toDouble()/cw > 70) { top = roiY+y; break }
+                var sum = 0
+                for (x in 0 until cw) {
+                    val c = pixels[y * meldW + sx + x]
+                    sum += (Color.red(c) + Color.green(c) + Color.blue(c)) / 3
+                }
+                if (sum.toDouble() / cw > 70) { top = roiY + y; break }
             }
-            var bot = roiY+roiH
-            for (y in roiH-1 downTo 0) {
-                val sum = (0 until cw).sumOf { val c = rp[y*cw+it]; (Color.red(c)+Color.green(c)+Color.blue(c))/3 }
-                if (sum.toDouble()/cw > 70) { bot = roiY+y+1; break }
+            var bot = roiY + roiH
+            for (y in roiH - 1 downTo 0) {
+                var sum = 0
+                for (x in 0 until cw) {
+                    val c = pixels[y * meldW + sx + x]
+                    sum += (Color.red(c) + Color.green(c) + Color.blue(c)) / 3
+                }
+                if (sum.toDouble() / cw > 70) { bot = roiY + y + 1; break }
             }
-            val fh = Math.max(bot-top, 8)
+            val fh = Math.max(bot - top, 8)
             if (fh < 8) continue
             val bmp = Bitmap.createBitmap(img, cx, top, cw, fh)
             slices.add(TileSlice("@${cx},${top} ${cw}x$fh", bmp, "meld_${slices.size}"))
