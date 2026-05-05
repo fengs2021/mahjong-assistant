@@ -12,6 +12,7 @@ import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.mahjong.assistant.capture.TileMatcher
+import com.mahjong.assistant.util.FLog
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -76,6 +77,8 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        FLog.init(filesDir)  // 兜底初始化（OverlaySvc可能未运行）
+        FLog.i("CollAct", "onCreate")
         setContentView(createLayout())
     }
 
@@ -173,6 +176,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
     }
 
     private fun switchTab(tag: String) {
+        FLog.i("CollAct", "switchTab → $tag")
         currentTab = tag
         for ((btn, t) in listOf(tabHand to "hand", tabMeld to "meld", tabRiver to "river")) {
             if (t == tag) {
@@ -188,6 +192,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
     private fun loadAndSlice() {
         val text = pathInput.text.toString().trim()
+        FLog.i("CollAct", "loadAndSlice path=$text")
         if (text.isEmpty()) { Toast.makeText(this, "输入截图路径", Toast.LENGTH_SHORT).show(); return }
 
         try {
@@ -197,22 +202,24 @@ class TemplateCollectorActivity : AppCompatActivity() {
             // 支持 file://, content:// 和绝对路径
             currentBitmap = when {
                 text.startsWith("content://") -> {
+                    FLog.i("CollAct", "加载content://")
                     contentResolver.openInputStream(Uri.parse(text))?.use {
                         BitmapFactory.decodeStream(it, null, opts)
                     }
                 }
                 text.startsWith("file://") -> {
                     val f = File(Uri.parse(text).path ?: text.removePrefix("file://"))
-                    if (!f.exists()) { statusLabel.text = "✗ 文件不存在"; return }
+                    if (!f.exists()) { statusLabel.text = "✗ 文件不存在"; FLog.w("CollAct", "file://不存在 $f"); return }
                     BitmapFactory.decodeFile(f.absolutePath, opts)
                 }
                 text.startsWith("/") -> {
                     val f = File(text)
-                    if (!f.exists()) { statusLabel.text = "✗ 文件不存在"; return }
+                    if (!f.exists()) { statusLabel.text = "✗ 文件不存在"; FLog.w("CollAct", "绝对路径不存在 $text"); return }
                     BitmapFactory.decodeFile(text, opts)
                 }
                 // 可能是 selectedUri content:// (onActivityResult 已设置)
                 selectedUri != null -> {
+                    FLog.i("CollAct", "加载selectedUri: $selectedUri")
                     contentResolver.openInputStream(selectedUri!!)?.use {
                         BitmapFactory.decodeStream(it, null, opts)
                     }
@@ -222,19 +229,22 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 }
             }
 
-            if (currentBitmap == null) { statusLabel.text = "✗ 无法解码图片"; return }
+            if (currentBitmap == null) { statusLabel.text = "✗ 无法解码图片"; FLog.e("CollAct", "bitmap解码后null"); return }
             val w = currentBitmap!!.width; val h = currentBitmap!!.height
+            FLog.i("CollAct", "截图 ${w}×${h} → 切分tab=$currentTab")
             statusLabel.text = "截图 ${w}×${h} — $currentTab"
             doSlice()
         } catch (e: Exception) {
+            FLog.e("CollAct", "loadAndSlice崩溃", e)
             statusLabel.text = "✗ ${e.message}"
         }
     }
 
     private fun doSlice() {
-        val img = currentBitmap ?: return
+        val img = currentBitmap ?: run { FLog.w("CollAct", "doSlice: bitmap null"); return }
         slices.clear()
         tileContainer.removeAllViews()
+        FLog.i("CollAct", "doSlice tab=$currentTab img=${img.width}x${img.height}")
 
         when (currentTab) {
             "hand" -> sliceHand(img)
@@ -242,6 +252,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
             "river" -> sliceRiver(img)
         }
 
+        FLog.i("CollAct", "doSlice done: ${slices.size} 张, 开始渲染")
         // 渲染
         for ((i, s) in slices.withIndex()) {
             addSliceRow(i, s)
@@ -255,28 +266,32 @@ class TemplateCollectorActivity : AppCompatActivity() {
     private fun sliceHand(img: Bitmap) {
         val iw = img.width; val ih = img.height
         var lastMatchedX = -1  // 记录最后成功模板匹配的slot x
+        var matchedCount = 0; var emptyCount = 0
         for (i in 0..12) {
             val x = HAND_FACE_X + i * HAND_SLOT_GAP
             if (x + HAND_FACE_W > iw || HAND_FACE_Y + HAND_FACE_H > ih) continue
             val px = IntArray(HAND_FACE_W * HAND_FACE_H)
             img.getPixels(px, 0, HAND_FACE_W, x, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
             val mean = px.sumOf { (Color.red(it) + Color.green(it) + Color.blue(it)) / 3 }.toDouble() / px.size
-            if (mean < 80) continue
+            if (mean < 80) { emptyCount++; continue }
             val bmp = Bitmap.createBitmap(img, x, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
             // 用TileMatcher确认是否可信手牌
             val result = TileMatcher.identifySingleTile(bmp)
             if (result != null && result.second >= 0.85) {
                 lastMatchedX = x
+                matchedCount++
             }
             slices.add(TileSlice("牌${i+1}", bmp, "hand_${i}"))
         }
         // Phase 2: 摸牌 = lastMatchedX + HW + 43
         handEndX = if (lastMatchedX >= 0) lastMatchedX + HAND_FACE_W else HAND_FACE_X
         val drawnX = handEndX + 43
+        FLog.i("CollAct", "手牌: match=$matchedCount empty=$emptyCount handEndX=$handEndX drawnX=$drawnX")
         if (drawnX + HAND_FACE_W <= iw) {
             val px = IntArray(HAND_FACE_W * HAND_FACE_H)
             img.getPixels(px, 0, HAND_FACE_W, drawnX, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
             val mean = px.sumOf { (Color.red(it) + Color.green(it) + Color.blue(it)) / 3 }.toDouble() / px.size
+            FLog.i("CollAct", "摸牌: x=$drawnX mean=${mean.toInt()}")
             if (mean >= 80) {
                 val bmp = Bitmap.createBitmap(img, drawnX, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
                 slices.add(TileSlice("摸牌", bmp, "hand_drawn"))
@@ -286,69 +301,79 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
     // ═══════ 副露分割 (模板匹配, 横竖都能识别) ═══════
     private fun sliceMeld(img: Bitmap) {
-        val iw = img.width; val ih = img.height
-        val meldX = handEndX + 10  // 摸牌(或手牌)后开始
-        if (meldX >= iw - 20) return
+        try {
+            val iw = img.width; val ih = img.height
+            val meldX = handEndX + 10  // 摸牌(或手牌)后开始
+            FLog.i("CollAct", "sliceMeld start: handEndX=$handEndX meldX=$meldX iw=$iw")
+            if (meldX >= iw - 20) { FLog.w("CollAct", "sliceMeld: meldX超界, meldX=$meldX iw=$iw"); return }
 
-        val roiY = Math.max(0, HAND_FACE_Y - 50)
-        val roiH = minOf(HAND_FACE_H + 80, ih - roiY)
-        val meldW = iw - meldX
-        if (meldW < 20 || roiH < 20) return
+            val roiY = Math.max(0, HAND_FACE_Y - 50)
+            val roiH = minOf(HAND_FACE_H + 80, ih - roiY)
+            val meldW = iw - meldX
+            FLog.i("CollAct", "sliceMeld ROI: x=$meldX y=$roiY w=$meldW h=$roiH")
+            if (meldW < 20 || roiH < 20) { FLog.w("CollAct", "sliceMeld: ROI太小 ${meldW}x${roiH}"); return }
 
-        // 直接扫亮块切, 再让自动识别标注
-        val pixels = IntArray(meldW * roiH)
-        img.getPixels(pixels, 0, meldW, meldX, roiY, meldW, roiH)
+            // 直接扫亮块切, 再让自动识别标注
+            val pixels = IntArray(meldW * roiH)
+            img.getPixels(pixels, 0, meldW, meldX, roiY, meldW, roiH)
 
-        // 找2D亮块: 对ROI做行扫描, 找到所有亮段, 竖直收缩
-        val allSegs = mutableListOf<Pair<Int,Int>>()
-        for (sy in listOf(roiH/4, roiH/2, 3*roiH/4)) {
-            var s = -1
-            val baseIdx = sy * meldW
-            for (i in 0 until meldW) {
-                val c = pixels[baseIdx + i]
-                val b = (Color.red(c) + Color.green(c) + Color.blue(c)) / 3
-                if (b > 90) { if (s < 0) s = i }
-                else { if (s >= 0 && i - s >= 8) allSegs.add(Pair(s, i)); s = -1 }
-            }
-            if (s >= 0 && meldW - s >= 8) allSegs.add(Pair(s, meldW - 1))
-        }
-
-        // 合并重叠(间距>10px才分开=副露牌间有明显间隙)
-        allSegs.sortBy { it.first }
-        val merged = mutableListOf<Pair<Int,Int>>()
-        for (seg in allSegs) {
-            if (merged.isEmpty() || seg.first > merged.last().second + 16)
-                merged.add(seg)
-            else
-                merged[merged.lastIndex] = Pair(merged.last().first, Math.max(merged.last().second, seg.second))
-        }
-
-        // 竖直收缩切牌
-        for ((sx, ex) in merged) {
-            val cx = meldX + sx; val cw = ex - sx
-            if (cw < 8 || cw > 200) continue
-            var top = roiY
-            for (y in 0 until roiH) {
-                var sum = 0
-                for (x in 0 until cw) {
-                    val c = pixels[y * meldW + sx + x]
-                    sum += (Color.red(c) + Color.green(c) + Color.blue(c)) / 3
+            // 找2D亮块: 对ROI做行扫描, 找到所有亮段, 竖直收缩
+            val allSegs = mutableListOf<Pair<Int,Int>>()
+            for (sy in listOf(roiH/4, roiH/2, 3*roiH/4)) {
+                var s = -1
+                val baseIdx = sy * meldW
+                for (i in 0 until meldW) {
+                    val c = pixels[baseIdx + i]
+                    val b = (Color.red(c) + Color.green(c) + Color.blue(c)) / 3
+                    if (b > 90) { if (s < 0) s = i }
+                    else { if (s >= 0 && i - s >= 8) allSegs.add(Pair(s, i)); s = -1 }
                 }
-                if (sum.toDouble() / cw > 70) { top = roiY + y; break }
+                if (s >= 0 && meldW - s >= 8) allSegs.add(Pair(s, meldW - 1))
             }
-            var bot = roiY + roiH
-            for (y in roiH - 1 downTo 0) {
-                var sum = 0
-                for (x in 0 until cw) {
-                    val c = pixels[y * meldW + sx + x]
-                    sum += (Color.red(c) + Color.green(c) + Color.blue(c)) / 3
+            FLog.i("CollAct", "sliceMeld 亮段: ${allSegs.size} raw → ${allSegs.joinToString(\",\")}")
+
+            // 合并重叠(间距>16px才分开=副露牌间有明显间隙)
+            allSegs.sortBy { it.first }
+            val merged = mutableListOf<Pair<Int,Int>>()
+            for (seg in allSegs) {
+                if (merged.isEmpty() || seg.first > merged.last().second + 16)
+                    merged.add(seg)
+                else
+                    merged[merged.lastIndex] = Pair(merged.last().first, Math.max(merged.last().second, seg.second))
+            }
+            FLog.i("CollAct", "sliceMeld 合并后: ${merged.size} 段")
+
+            // 竖直收缩切牌
+            for ((sx, ex) in merged) {
+                val cx = meldX + sx; val cw = ex - sx
+                if (cw < 8 || cw > 200) { FLog.i("CollAct", "  跳过: cw=$cw"); continue }
+                var top = roiY
+                for (y in 0 until roiH) {
+                    var sum = 0
+                    for (x in 0 until cw) {
+                        val c = pixels[y * meldW + sx + x]
+                        sum += (Color.red(c) + Color.green(c) + Color.blue(c)) / 3
+                    }
+                    if (sum.toDouble() / cw > 70) { top = roiY + y; break }
                 }
-                if (sum.toDouble() / cw > 70) { bot = roiY + y + 1; break }
+                var bot = roiY + roiH
+                for (y in roiH - 1 downTo 0) {
+                    var sum = 0
+                    for (x in 0 until cw) {
+                        val c = pixels[y * meldW + sx + x]
+                        sum += (Color.red(c) + Color.green(c) + Color.blue(c)) / 3
+                    }
+                    if (sum.toDouble() / cw > 70) { bot = roiY + y + 1; break }
+                }
+                val fh = Math.max(bot - top, 8)
+                if (fh < 8) { FLog.i("CollAct", "  跳过: fh=$fh"); continue }
+                FLog.i("CollAct", "  切出: @$cx,$top ${cw}x$fh")
+                val bmp = Bitmap.createBitmap(img, cx, top, cw, fh)
+                slices.add(TileSlice("@${cx},${top} ${cw}x$fh", bmp, "meld_${slices.size}"))
             }
-            val fh = Math.max(bot - top, 8)
-            if (fh < 8) continue
-            val bmp = Bitmap.createBitmap(img, cx, top, cw, fh)
-            slices.add(TileSlice("@${cx},${top} ${cw}x$fh", bmp, "meld_${slices.size}"))
+            FLog.i("CollAct", "sliceMeld done: ${slices.size} 张副露")
+        } catch (e: Exception) {
+            FLog.e("CollAct", "sliceMeld崩溃", e)
         }
     }
 
@@ -366,72 +391,78 @@ class TemplateCollectorActivity : AppCompatActivity() {
     )
 
     private fun addSliceRow(index: Int, s: TileSlice) {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(2, 4, 2, 4)
-        }
+        try {
+            FLog.i("CollAct", "addSliceRow[$index] ${s.id} size=${s.bmp.width}x${s.bmp.height}")
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(2, 4, 2, 4)
+            }
 
-        // 序号
-        row.addView(TextView(this).apply {
-            text = "${index+1}"; textSize = 9f
-            setTextColor(0xFF80B080.toInt()); setPadding(0, 0, 4, 0)
-            layoutParams = LinearLayout.LayoutParams(dp(18), LinearLayout.LayoutParams.WRAP_CONTENT)
-        })
-
-        // 裁剪图
-        val dstH = dp(48)
-        val dstW = Math.min(dp(52), Math.max(dp(22), s.bmp.width * dstH / s.bmp.height))
-        row.addView(ImageView(this).apply {
-            setImageBitmap(Bitmap.createScaledBitmap(s.bmp, dstW, dstH, true))
-            setBackgroundColor(0xFF1A2A1A.toInt())
-            layoutParams = LinearLayout.LayoutParams(dstW, dstH).apply { marginEnd = 6 }
-        })
-
-        // 自动识别 (所有tab)
-        val autoResult = autoIdentify(s.bmp)
-        val autoName = if (autoResult != null && autoResult.second >= (if (currentTab == "meld") 0.20 else 0.85)) tileNames.getOrNull(autoResult.first) else null
-        val autoLabel = if (autoName != null) autoName else "未识别"
-        val autoScore = if (autoResult != null) String.format("%.2f", autoResult.second) else ""
-
-        // Spinner
-        val spinner = Spinner(this).apply {
-            val options = mutableListOf("未识别")
-            options.addAll(tileNames)
-            adapter = ArrayAdapter(this@TemplateCollectorActivity, android.R.layout.simple_spinner_dropdown_item, options)
-            setBackgroundColor(0xFF2D3A2D.toInt())
-            setPopupBackgroundDrawable(ColorDrawable(0xFF1A2E1A.toInt()))
-            val selIdx = if (autoName != null) tileNames.indexOf(autoName) + 1 else 0
-            if (selIdx >= 0) setSelection(selIdx)
-            tag = s
-            s.label = if (autoName != null) autoName else "未识别"
-            setOnItemSelectedListener(object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                    s.label = parent?.getItemAtPosition(pos)?.toString() ?: "未识别"
-                }
-                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            // 序号
+            row.addView(TextView(this).apply {
+                text = "${index+1}"; textSize = 9f
+                setTextColor(0xFF80B080.toInt()); setPadding(0, 0, 4, 0)
+                layoutParams = LinearLayout.LayoutParams(dp(18), LinearLayout.LayoutParams.WRAP_CONTENT)
             })
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        row.addView(spinner)
 
-        // 识别结果标签
-        val labelColor = when {
-            autoName != null && autoResult!!.second >= 0.85 -> 0xFF5CFF5C.toInt()
-            autoName != null -> 0xFFA0C040.toInt()
-            else -> 0xFF606060.toInt()
-        }
-        val showText = when {
-            autoName != null -> "$autoLabel $autoScore"
-            autoResult != null -> "最佳:" + tileNames[autoResult.first] + " " + String.format("%.2f", autoResult.second)
-            else -> "未识别"
-        }
-        row.addView(TextView(this).apply {
-            text = showText; textSize = 9f; setTextColor(labelColor)
-            layoutParams = LinearLayout.LayoutParams(dp(76), LinearLayout.LayoutParams.WRAP_CONTENT)
-        })
+            // 裁剪图
+            val dstH = dp(48)
+            val dstW = Math.min(dp(52), Math.max(dp(22), s.bmp.width * dstH / s.bmp.height))
+            row.addView(ImageView(this).apply {
+                setImageBitmap(Bitmap.createScaledBitmap(s.bmp, dstW, dstH, true))
+                setBackgroundColor(0xFF1A2A1A.toInt())
+                layoutParams = LinearLayout.LayoutParams(dstW, dstH).apply { marginEnd = 6 }
+            })
 
-        tileContainer.addView(row)
+            // 自动识别 (所有tab)
+            val autoResult = autoIdentify(s.bmp)
+            val autoName = if (autoResult != null && autoResult.second >= (if (currentTab == "meld") 0.20 else 0.85)) tileNames.getOrNull(autoResult.first) else null
+            val autoLabel = if (autoName != null) autoName else "未识别"
+            val autoScore = if (autoResult != null) String.format("%.2f", autoResult.second) else ""
+            FLog.i("CollAct", "  auto: $autoLabel score=$autoScore")
+
+            // Spinner
+            val spinner = Spinner(this).apply {
+                val options = mutableListOf("未识别")
+                options.addAll(tileNames)
+                adapter = ArrayAdapter(this@TemplateCollectorActivity, android.R.layout.simple_spinner_dropdown_item, options)
+                setBackgroundColor(0xFF2D3A2D.toInt())
+                setPopupBackgroundDrawable(ColorDrawable(0xFF1A2E1A.toInt()))
+                val selIdx = if (autoName != null) tileNames.indexOf(autoName) + 1 else 0
+                if (selIdx >= 0) setSelection(selIdx)
+                tag = s
+                s.label = if (autoName != null) autoName else "未识别"
+                setOnItemSelectedListener(object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                        s.label = parent?.getItemAtPosition(pos)?.toString() ?: "未识别"
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) {}
+                })
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            row.addView(spinner)
+
+            // 识别结果标签
+            val labelColor = when {
+                autoName != null && autoResult!!.second >= 0.85 -> 0xFF5CFF5C.toInt()
+                autoName != null -> 0xFFA0C040.toInt()
+                else -> 0xFF606060.toInt()
+            }
+            val showText = when {
+                autoName != null -> "$autoLabel $autoScore"
+                autoResult != null -> "最佳:" + tileNames[autoResult.first] + " " + String.format("%.2f", autoResult.second)
+                else -> "未识别"
+            }
+            row.addView(TextView(this).apply {
+                text = showText; textSize = 9f; setTextColor(labelColor)
+                layoutParams = LinearLayout.LayoutParams(dp(76), LinearLayout.LayoutParams.WRAP_CONTENT)
+            })
+
+            tileContainer.addView(row)
+        } catch (e: Exception) {
+            FLog.e("CollAct", "addSliceRow[$index] 崩溃", e)
+        }
     }
 
     private fun autoIdentify(bmp: Bitmap): Pair<Int, Double>? {
@@ -439,6 +470,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
     }
 
     private fun saveAll() {
+        FLog.i("CollAct", "saveAll tab=$currentTab slices=${slices.size}")
         if (slices.isEmpty()) { Toast.makeText(this, "请先加载截图", Toast.LENGTH_SHORT).show(); return }
         val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "mahjong_templates")
         if (!outDir.exists()) outDir.mkdirs()
@@ -506,6 +538,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        FLog.i("CollAct", "onDestroy")
         currentBitmap?.recycle()
     }
 }
