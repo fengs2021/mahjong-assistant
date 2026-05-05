@@ -25,6 +25,7 @@ import java.io.FileOutputStream
 class TemplateCollectorActivity : AppCompatActivity() {
 
     companion object {
+        private const val REQUEST_PICK_IMAGE = 1001
         // ─── 手牌 (PPG-AN00横屏 2800x1264) ───
         const val HAND_FACE_X = 541       // faceLeft (536+5)
         const val HAND_FACE_Y = 1106
@@ -68,10 +69,6 @@ class TemplateCollectorActivity : AppCompatActivity() {
     private var currentBitmap: Bitmap? = null
     private var currentTab = "hand"
     private var selectedUri: Uri? = null
-
-    companion object {
-        private const val REQUEST_PICK_IMAGE = 1001
-    }
 
     // 切割结果
     data class TileSlice(val id: String, val bmp: Bitmap, var label: String)
