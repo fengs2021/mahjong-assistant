@@ -316,8 +316,21 @@ class TemplateCollectorActivity : AppCompatActivity() {
             if (currentTab != "meld") slices.add(TileSlice("牌${i+1}", bmp, "hand_${i}"))
         }
         handEndX = if (lastVisibleX >= 0) lastVisibleX + HAND_FACE_W else HAND_FACE_X
-        val drawnX = handEndX + 43
-        FLog.i("CollAct", "手牌: match=$matchedCount empty=$emptyCount handEndX=$handEndX drawnX=$drawnX")
+        // 逐列扫描找摸牌左边界（自适应间距，不硬编码+43）
+        var drawnX = -1
+        val scanLimit = Math.min(iw - handEndX, 200)
+        if (scanLimit > HAND_FACE_W) {
+            val scanPx = IntArray(scanLimit)
+            val scanY = HAND_FACE_Y + HAND_FACE_H / 2
+            img.getPixels(scanPx, 0, scanLimit, handEndX, scanY, scanLimit, 1)
+            for (offset in 0 until scanLimit - HAND_FACE_W step 2) {
+                var sum = 0
+                for (k in 0 until HAND_FACE_W) { val c = scanPx[offset + k]; sum += (Color.red(c) + Color.green(c) + Color.blue(c)) / 3 }
+                if ((sum.toDouble() / HAND_FACE_W) >= 80) { drawnX = handEndX + offset; break }
+            }
+        }
+        if (drawnX < 0) drawnX = handEndX + 43  // fallback
+        FLog.i("CollAct", "手牌: match=$matchedCount empty=$emptyCount handEndX=$handEndX drawnX=$drawnX（间距=${drawnX - handEndX}）")
         drawnEndX = 0
         if (drawnX + HAND_FACE_W <= iw) {
             val px = IntArray(HAND_FACE_W * HAND_FACE_H); img.getPixels(px, 0, HAND_FACE_W, drawnX, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
