@@ -451,7 +451,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
             }
             val showText = when {
                 autoName != null -> "$autoLabel $autoScore"
-                autoResult != null -> "最佳:" + tileNames[autoResult.first] + " " + String.format("%.2f", autoResult.second)
+                autoResult != null && autoResult.first in 0 until tileNames.size -> "最佳:" + tileNames[autoResult.first] + " " + String.format("%.2f", autoResult.second)
                 else -> "未识别"
             }
             row.addView(TextView(this).apply {
