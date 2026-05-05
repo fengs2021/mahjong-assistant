@@ -184,30 +184,16 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 sliceHandAndDrawn(img)
                 for ((i, s) in slices.withIndex()) addSliceRow(i, s, scrollContent)
             }
-            "meld" -> {
-                // 切出副露区域的子图给MeldMarkerView
-                sliceHandAndDrawn(img)  // 算handEndX/drawnEndX
-
-                val iw = img.width; val ih = img.height
-                val meldX = (if (drawnEndX > 0) drawnEndX else handEndX + HAND_FACE_W) + 10
-                val roiY = Math.max(0, HAND_FACE_Y - 50); val roiH = Math.min(HAND_FACE_H + 80, ih - roiY).toInt()
-                val meldW = Math.min(iw - meldX, img.width - meldX)
-                FLog.i("CollAct", "meldView: meldX=$meldX roiY=$roiY meldW=$meldW roiH=$roiH")
-                if (meldW < 20 || roiH < 20) {
-                    statusLabel.text = "副露区太小或不存在"
-                } else {
-                    val meldBmp = Bitmap.createBitmap(img, meldX.coerceIn(0, iw-1), roiY.coerceIn(0, ih-1), meldW.coerceAtMost(iw-meldX), roiH.coerceAtMost(ih-roiY))
-                    meldMarkerView.setImage(meldBmp)
-                    meldMarkerView.visibility = View.VISIBLE
-                    btnAddAnn.parent?.let { (it as View).visibility = View.VISIBLE }
-                    annContainer.visibility = View.VISIBLE
-                    slices.clear()  // 副露不用slices, 用annotations
-                }
-            }
-            "river" -> sliceRiver(img)
+            "meld", "river" -> {
+                // 原图直接标注,不裁子图
+                meldMarkerView.setImage(img)
+                meldMarkerView.visibility = View.VISIBLE
+                btnAddAnn.parent?.let { (it as View).visibility = View.VISIBLE }
+                annContainer.visibility = View.VISIBLE
+                slices.clear()
         }
         FLog.i("CollAct", "doSlice done: ${slices.size} slices, ${meldMarkerView.getAnnotations().size} annotations")
-        statusLabel.text = "截图 ${img.width}×${img.height} — $currentTab: ${if (currentTab == "meld") "${meldMarkerView.getAnnotations().size}标" else "${slices.size}张"}"
+        statusLabel.text = "截图 ${img.width}×${img.height} — $currentTab: ${if (currentTab == "meld" || currentTab == "river") "${meldMarkerView.getAnnotations().size}标" else "${slices.size}张"}"
     }
 
     // ═══════ 副露手动标注 ═══════
@@ -341,8 +327,6 @@ class TemplateCollectorActivity : AppCompatActivity() {
         }
     }
 
-    private fun sliceRiver(img: Bitmap) {}
-
     // ═══════ UI 渲染 ═══════
     private val tileNames = arrayOf("一万","二万","三万","四万","五万","六万","七万","八万","九万","一筒","二筒","三筒","四筒","五筒","六筒","七筒","八筒","九筒","一索","二索","三索","四索","五索","六索","七索","八索","九索","東","南","西","北","白","発","中")
 
@@ -379,18 +363,18 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
     // ═══════ 保存 ═══════
     private fun saveAll() {
-        if (currentTab == "meld") {
-            saveMeldAnnotations()
-            return
+        when (currentTab) {
+            "meld" -> saveAnnotationsTo("meld_tiles")
+            "river" -> saveAnnotationsTo("river_tiles")
+            else -> Toast.makeText(this, "手牌模板已完善(34/34)，无需重复采集。请切换到副露/牌河Tab标注后保存", Toast.LENGTH_LONG).show()
         }
-        Toast.makeText(this, "手牌模板已完善(34/34)，无需重复采集。请切换到副露Tab标注后保存", Toast.LENGTH_LONG).show()
     }
 
-    private fun saveMeldAnnotations() {
+    private fun saveAnnotationsTo(subdir: String) {
         val anns = meldMarkerView.getAnnotations()
-        FLog.i("CollAct", "saveAll meld anns=${anns.size}")
+        FLog.i("CollAct", "saveAll $subdir anns=${anns.size}")
         if (anns.isEmpty()) { Toast.makeText(this, "请先添加标注", Toast.LENGTH_SHORT).show(); return }
-        val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "mahjong_templates")
+        val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "mahjong_templates/$subdir")
         if (!outDir.exists()) outDir.mkdirs()
         var saved = 0; var skipped = 0
         for (ann in anns) {
@@ -401,9 +385,9 @@ class TemplateCollectorActivity : AppCompatActivity() {
             while (File(outDir, candidate).exists()) { candidate = "${ann.label}_${ann.direction}${counter}.png"; counter++ }
             try { FileOutputStream(File(outDir, candidate)).use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }; saved++ } catch (_: Exception) { skipped++ }
         }
-        FLog.i("CollAct", "meld保存: $saved/$saved+$skipped")
+        FLog.i("CollAct", "$subdir 保存: $saved/$saved+$skipped")
         AlertDialog.Builder(this).setTitle("保存完成")
-            .setMessage("已保存 $saved/${anns.size} 张\n$skipped 张未标注(跳过)\n→ ${outDir.absolutePath}\n\n记得把.png文件移到 assets/meld_tiles/ 目录并重新编译")
+            .setMessage("已保存 $saved/${anns.size} 张\n$skipped 张未标注(跳过)\n→ ${outDir.absolutePath}\n\n记得把.png文件移到 assets/$subdir/ 目录并重新编译")
             .setPositiveButton("确定", null).show()
         statusLabel.text = "已保存 $saved 张"
     }
