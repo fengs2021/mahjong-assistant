@@ -266,6 +266,18 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 }); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }; row.addView(spinner)
 
+            // 方向切换
+            Button(this).apply {
+                text = ann.direction; textSize = 10f
+                setBackgroundColor(if (ann.direction == "竖") 0xFF2D3A6D.toInt() else 0xFF3D6A2D.toInt())
+                setTextColor(0xFFA0C0FF.toInt()); setPadding(dp(6), dp(2), dp(6), dp(2))
+                setOnClickListener { v ->
+                    ann.direction = if (ann.direction == "竖") "横" else "竖"
+                    (v as Button).text = ann.direction
+                    v.setBackgroundColor(if (ann.direction == "竖") 0xFF2D3A6D.toInt() else 0xFF3D6A2D.toInt())
+                }
+            }.also { row.addView(it) }
+
             // 调整按钮
             Button(this).apply {
                 text = "调"; textSize = 9f; setBackgroundColor(0xFF2D3A2D.toInt()); setTextColor(0xFF80B080.toInt()); setPadding(dp(4), dp(2), dp(4), dp(2))
@@ -358,24 +370,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
             saveMeldAnnotations()
             return
         }
-        FLog.i("CollAct", "saveAll tab=$currentTab slices=${slices.size}")
-        if (slices.isEmpty()) { Toast.makeText(this, "请先加载截图", Toast.LENGTH_SHORT).show(); return }
-        val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "mahjong_templates")
-        if (!outDir.exists()) outDir.mkdirs()
-        var saved = 0; var skipped = 0
-        for (s in slices) {
-            val name = s.label
-            if (name == "未识别" || name == "未知") { skipped++; continue }
-            val fileName = if (currentTab == "hand") {
-                val direction = if (s.bmp.width > s.bmp.height) "横" else "竖"
-                var candidate = "${name}_${direction}.png"; var counter = 2
-                while (File(outDir, candidate).exists()) { candidate = "${name}_${direction}${counter}.png"; counter++ }
-                candidate
-            } else "${s.label}.png"
-            try { FileOutputStream(File(outDir, fileName)).use { s.bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }; saved++ } catch (_: Exception) { skipped++ }
-        }
-        AlertDialog.Builder(this).setTitle("保存完成").setMessage("$saved/${slices.size} 张 →\n${outDir.absolutePath}").setPositiveButton("确定", null).show()
-        statusLabel.text = "已保存 $saved 张"
+        Toast.makeText(this, "手牌模板已完善(34/34)，无需重复采集。请切换到副露Tab标注后保存", Toast.LENGTH_LONG).show()
     }
 
     private fun saveMeldAnnotations() {
