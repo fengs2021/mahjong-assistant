@@ -335,10 +335,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
     // ═══════ 河底分割 (边缘检测, 4家) ═══════
     private fun sliceRiver(img: Bitmap) {
-        val iw = img.width; val ih = img.height
-        val rois = listOf(
-        )  // 河底坐标因人而异, 固定网格不可靠, 仅保存逻辑保留
-        // 不做自动切——河底牌太小太多, 标注意义不大, 保留代码结构
+        // 河底坐标因人而异, 不做自动切
     }
 
     // ═══════ UI渲染 (全部tab: 自动识别+Spinner标注) ═══════
