@@ -330,7 +330,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 }
                 if (s >= 0 && meldW - s >= 8) allSegs.add(Pair(s, meldW - 1))
             }
-            FLog.i("CollAct", "sliceMeld 亮段: ${allSegs.size} raw → ${allSegs.joinToString(\",\")}")
+            FLog.i("CollAct", "sliceMeld 亮段: ${allSegs.size} raw → ${allSegs.joinToString(",")}")
 
             // 合并重叠(间距>16px才分开=副露牌间有明显间隙)
             allSegs.sortBy { it.first }
