@@ -252,21 +252,20 @@ class TemplateCollectorActivity : AppCompatActivity() {
     // ═══════ 手牌分割 ═══════
     private fun sliceHand(img: Bitmap) {
         val iw = img.width; val ih = img.height
-        var slotCount = 0
+        var lastTileX = -1  // 跟踪最后一张牌的x坐标
         for (i in 0..12) {
             val x = HAND_FACE_X + i * HAND_SLOT_GAP
             if (x + HAND_FACE_W > iw || HAND_FACE_Y + HAND_FACE_H > ih) continue
-            // 亮度检测: 跳过空位
             val px = IntArray(HAND_FACE_W * HAND_FACE_H)
             img.getPixels(px, 0, HAND_FACE_W, x, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
             val mean = px.sumOf { (Color.red(it) + Color.green(it) + Color.blue(it)) / 3 }.toDouble() / px.size
             if (mean < 80) continue
-            slotCount++
+            lastTileX = x
             val bmp = Bitmap.createBitmap(img, x, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
             slices.add(TileSlice("牌${i+1}", bmp, "hand_${i}"))
         }
-        // 摸牌: 动态位置
-        val drawnX = if (slotCount > 0) HAND_FACE_X + (slotCount - 1) * HAND_SLOT_GAP + HAND_FACE_W + 43 else HAND_DRAWN_X
+        // 摸牌: 最后牌右+43px(牌间标准间距)
+        val drawnX = if (lastTileX > 0) lastTileX + HAND_FACE_W + 43 else HAND_DRAWN_X
         if (drawnX + HAND_FACE_W <= iw) {
             val px = IntArray(HAND_FACE_W * HAND_FACE_H)
             img.getPixels(px, 0, HAND_FACE_W, drawnX, HAND_FACE_Y, HAND_FACE_W, HAND_FACE_H)
