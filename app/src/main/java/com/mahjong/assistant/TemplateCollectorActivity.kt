@@ -187,23 +187,42 @@ class TemplateCollectorActivity : AppCompatActivity() {
     }
 
     private fun loadAndSlice() {
-        val path = pathInput.text.toString().trim()
-        if (path.isEmpty()) { Toast.makeText(this, "输入截图路径", Toast.LENGTH_SHORT).show(); return }
+        val text = pathInput.text.toString().trim()
+        if (text.isEmpty()) { Toast.makeText(this, "输入截图路径", Toast.LENGTH_SHORT).show(); return }
 
         try {
             currentBitmap?.recycle()
             val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
 
-            // 支持文件路径和content:// URI两种方式
-            currentBitmap = if (path.startsWith("content://")) {
-                contentResolver.openInputStream(Uri.parse(path))?.use { BitmapFactory.decodeStream(it, null, opts) }
-            } else {
-                val file = File(path)
-                if (!file.exists()) { statusLabel.text = "✗ 文件不存在: $path"; return@loadAndSlice }
-                BitmapFactory.decodeFile(path, opts)
+            // 支持 file://, content:// 和绝对路径
+            currentBitmap = when {
+                text.startsWith("content://") -> {
+                    contentResolver.openInputStream(Uri.parse(text))?.use {
+                        BitmapFactory.decodeStream(it, null, opts)
+                    }
+                }
+                text.startsWith("file://") -> {
+                    val f = File(Uri.parse(text).path ?: text.removePrefix("file://"))
+                    if (!f.exists()) { statusLabel.text = "✗ 文件不存在"; return }
+                    BitmapFactory.decodeFile(f.absolutePath, opts)
+                }
+                text.startsWith("/") -> {
+                    val f = File(text)
+                    if (!f.exists()) { statusLabel.text = "✗ 文件不存在"; return }
+                    BitmapFactory.decodeFile(text, opts)
+                }
+                // 可能是 selectedUri content:// (onActivityResult 已设置)
+                selectedUri != null -> {
+                    contentResolver.openInputStream(selectedUri!!)?.use {
+                        BitmapFactory.decodeStream(it, null, opts)
+                    }
+                }
+                else -> {
+                    statusLabel.text = "✗ 不支持的路径格式"; return
+                }
             }
 
-            if (currentBitmap == null) { statusLabel.text = "✗ 无法解码"; return }
+            if (currentBitmap == null) { statusLabel.text = "✗ 无法解码图片"; return }
             val w = currentBitmap!!.width; val h = currentBitmap!!.height
             statusLabel.text = "截图 ${w}×${h} — $currentTab"
             doSlice()
@@ -507,50 +526,10 @@ class TemplateCollectorActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_PICK_IMAGE && resultCode == RESULT_OK && data?.data != null) {
             selectedUri = data.data
-            val name = getFileName(selectedUri!!)
-            // 尝试将URI转为真实路径
-            val realPath = getRealPathFromUri(selectedUri!!)
-            if (realPath != null) {
-                pathInput.setText(realPath)
-                loadAndSlice()
-            } else {
-                // 降级: 直接用content:// URI(新loadAndSlice支持)
-                pathInput.setText(selectedUri.toString())
-                loadAndSlice()
-            }
+            // 将URI字符串填入输入框，用selectedUri直接加载(不转换路径)
+            pathInput.setText(selectedUri.toString())
+            loadAndSlice()
         }
-    }
-
-    private fun getFileName(uri: Uri): String {
-        var name = "unknown"
-        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (cursor.moveToFirst() && idx >= 0) name = cursor.getString(idx)
-        }
-        return name
-    }
-
-    private fun getRealPathFromUri(uri: Uri): String? {
-        // 最常见: /storage/emulated/0/Download/xxx.jpg
-        val docId = uri.lastPathSegment
-        if (docId != null && docId.contains(":")) {
-            val split = docId.split(":")
-            if (split.size >= 2) {
-                val path = split[1]
-                if (path.startsWith("/")) return path
-                // primary:Download/xxx.jpg
-                return "/storage/emulated/0/$path"
-            }
-        }
-        // content://media/external/images/media/xxx
-        val proj = arrayOf(android.provider.MediaStore.Images.Media.DATA)
-        try {
-            contentResolver.query(uri, proj, null, null, null)?.use { cursor ->
-                val idx = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.DATA)
-                if (cursor.moveToFirst()) return cursor.getString(idx)
-            }
-        } catch (_: Exception) {}
-        return null
     }
 
     override fun onDestroy() {
