@@ -351,7 +351,9 @@ object TileMatcher {
             if (highConf >= 1) {
                 // 手牌不足13张 → 扫描右下副露区域
                 if (posResults.size < 13) {
-                    val meldResults = scanMeldArea(screenshot, lastHandY, lastHandH)
+                    val meldResults = scanMeldArea(screenshot, lastHandY, lastHandH,
+                    handCount = posResults.size,
+                    excludedIds = posResults.map { it.tileId }.toSet())
                     FLog.i("TileMatcher", "副露扫描: ${meldResults.size}张 → 合并=${posResults.size + meldResults.size}")
                     posResults + meldResults
                 } else {
@@ -778,7 +780,7 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
     // 副露在手牌同高度右侧, 牌面约手牌等大
     // ═══════════════════════════════════════════
 
-    private fun scanMeldArea(screenshot: Bitmap, handY: Int, handH: Int): List<MatchResult> {
+    private fun scanMeldArea(screenshot: Bitmap, handY: Int, handH: Int, handCount: Int = 13, excludedIds: Set<Int> = emptySet()): List<MatchResult> {
         FLog.i("TileMatcher", "scanMeldArea start")
         val srcMat = Mat()
         Utils.bitmapToMat(screenshot, srcMat)
@@ -791,7 +793,9 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
         // 副露区域: 底部右侧, 以手牌y为基准向上扩50向下扩80 (覆盖杠牌横放上下分列)
         val meldY = maxOf(0, handY - 50)
         val meldH = minOf(handH + 130, imgH - meldY)
-        val meldX = 1150           // 手牌右侧+副露条向左延伸
+        // meldX: 从最后一张手牌右边缘+10px开始, 避免扫到手牌
+        val lastHandEnd = mainHandSlots[minOf(handCount, 12)].faceLeft + 98 + 10
+        val meldX = maxOf(lastHandEnd, 1150)
         val meldW = imgW - meldX
 
         if (meldW < 50 || meldH < 30) {
@@ -816,7 +820,7 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
         val minScale = 0.85
         val maxScale = 1.15
         val scaleSteps = 7   // 0.85 + 6*0.05 = 1.15
-        val meldThreshold = 0.65
+        val meldThreshold = 0.40  // 副露渲染不同于手牌, Python实测0.20-0.47
 
         // 方向: 0°(竖放), 90°CW(横放左), 270°CW(横放右)
         val templateRots = intArrayOf(-1, Core.ROTATE_90_CLOCKWISE, Core.ROTATE_90_COUNTERCLOCKWISE)
@@ -909,8 +913,17 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
         hits.sortByDescending { it.score }
         val filtered = mutableListOf<Hit>()
         for (h in hits) {
-            // 排除摸牌/手牌区 (x<1500与手牌y重叠)
-            if (h.x < 1500 && kotlin.math.abs(h.y - 1106) < 50) continue
+            // 排除已知手牌类型(已在手牌中识别的牌种, 避免重复计数)
+            if (h.tileId in excludedIds) continue
+            // 排除手牌区域: x在已知hand slot位置±20px内
+            val isInHandArea = (0 until handCount).any { i ->
+                val hx = mainHandSlots[i].faceLeft
+                kotlin.math.abs(h.x - hx) < 25
+            }
+            if (isInHandArea) continue
+            // 排除摸牌位置(动态计算, 在最后手牌右+43px处)
+            val drawnX = mainHandSlots[handCount - 1].faceLeft + 98 + 43
+            if (kotlin.math.abs(h.x - drawnX) < 30) continue
             val overlap = filtered.any { k ->
                 val ix1 = maxOf(h.x, k.x); val iy1 = maxOf(h.y, k.y)
                 val ix2 = minOf(h.x + h.w, k.x + k.w); val iy2 = minOf(h.y + h.h, k.y + k.h)
