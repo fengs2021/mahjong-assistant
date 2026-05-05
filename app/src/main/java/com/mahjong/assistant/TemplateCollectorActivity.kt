@@ -277,56 +277,60 @@ class TemplateCollectorActivity : AppCompatActivity() {
         }
     }
 
-    // ═══════ 副露分割 (边缘检测精准切割) ═══════
+    // ═══════ 副露分割 (多行扫描, 识别横竖牌) ═══════
     private fun sliceMeld(img: Bitmap) {
         val iw = img.width; val ih = img.height
         val meldX = HAND_FACE_X + 13 * HAND_SLOT_GAP + HAND_FACE_W + 10
         if (meldX >= iw - 20) return
 
-        val scanY = HAND_FACE_Y + HAND_FACE_H / 2
+        val roiY = Math.max(0, HAND_FACE_Y - 50)
+        val roiH = minOf(HAND_FACE_H + 80, ih - roiY)
         val scanW = iw - meldX
-        val pixels = IntArray(scanW)
-        img.getPixels(pixels, 0, scanW, meldX, scanY, scanW, 1)
-        val bright = IntArray(scanW) { i -> val c = pixels[i]; (Color.red(c)+Color.green(c)+Color.blue(c))/3 }
 
-        // 找亮段: 连续>=8px 亮度>90
-        val segs = mutableListOf<Pair<Int,Int>>()
-        var s = -1
-        for (i in bright.indices) {
-            if (bright[i] > 90) { if (s < 0) s = i }
-            else { if (s >= 0 && i - s >= 8) segs.add(Pair(s, i)); s = -1 }
+        // 多行扫描: 副露牌有横有竖, 单行会漏掉
+        val allSegs = mutableListOf<Pair<Int,Int>>()
+        for (scanY in listOf(roiY + roiH/4, roiY + roiH/2, roiY + 3*roiH/4)) {
+            val px = IntArray(scanW)
+            img.getPixels(px, 0, scanW, meldX, scanY, scanW, 1)
+            var s = -1
+            for (i in 0 until scanW) {
+                val b = (Color.red(px[i])+Color.green(px[i])+Color.blue(px[i]))/3
+                if (b > 90) { if (s < 0) s = i }
+                else { if (s >= 0 && i - s >= 8) allSegs.add(Pair(s, i)); s = -1 }
+            }
+            if (s >= 0 && scanW - s >= 8) allSegs.add(Pair(s, scanW-1))
         }
-        if (s >= 0 && bright.size - s >= 8) segs.add(Pair(s, bright.size - 1))
 
-        // 合并间隙<3px (副露牌间距小, 不像手牌111px)
+        // 按x起始排序, 合并重叠的段(不同行扫到的同一张牌)
+        allSegs.sortBy { it.first }
         val merged = mutableListOf<Pair<Int,Int>>()
-        for (seg in segs.sortedBy { it.first }) {
-            if (merged.isEmpty() || seg.first - merged.last().second > 3)
+        for (seg in allSegs) {
+            if (merged.isEmpty() || seg.first > merged.last().second + 2)
                 merged.add(seg)
-            else
-                merged[merged.lastIndex] = Pair(merged.last().first, seg.second)
+            else {
+                val last = merged.last()
+                merged[merged.lastIndex] = Pair(last.first, Math.max(last.second, seg.second))
+            }
         }
 
-        // 竖直收缩
+        // 竖直收缩: 对每列, 在ROI内精确切出牌面
         for ((sx, ex) in merged) {
             val cx = meldX + sx; val cw = ex - sx
-            if (cw < 8 || cw > 200) continue  // 牌面不可能超200px宽
-            val roiY1 = Math.max(0, HAND_FACE_Y - 50)
-            val roiH = minOf(HAND_FACE_H + 80, ih - roiY1)
+            if (cw < 8 || cw > 160) continue
             val rp = IntArray(cw * roiH)
-            img.getPixels(rp, 0, cw, cx, roiY1, cw, roiH)
-            var top = roiY1
+            img.getPixels(rp, 0, cw, cx, roiY, cw, roiH)
+            var top = roiY
             for (y in 0 until roiH) {
                 val sum = (0 until cw).sumOf { val c = rp[y*cw+it]; (Color.red(c)+Color.green(c)+Color.blue(c))/3 }
-                if (sum.toDouble()/cw > 80) { top = roiY1+y; break }
+                if (sum.toDouble()/cw > 70) { top = roiY+y; break }
             }
-            var bot = roiY1+roiH
+            var bot = roiY+roiH
             for (y in roiH-1 downTo 0) {
                 val sum = (0 until cw).sumOf { val c = rp[y*cw+it]; (Color.red(c)+Color.green(c)+Color.blue(c))/3 }
-                if (sum.toDouble()/cw > 80) { bot = roiY1+y+1; break }
+                if (sum.toDouble()/cw > 70) { bot = roiY+y+1; break }
             }
-            val fh = Math.max(bot-top, 10)
-            if (fh < 10) continue
+            val fh = Math.max(bot-top, 8)
+            if (fh < 8) continue
             val bmp = Bitmap.createBitmap(img, cx, top, cw, fh)
             slices.add(TileSlice("@${cx},${top} ${cw}x$fh", bmp, "meld_${slices.size}"))
         }
