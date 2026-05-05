@@ -446,7 +446,7 @@ object TileMatcher {
         val drawnSlotDynamic = if (handHighConf in 1..12) {
             val lastSlotIdx = handHighConf - 1
             val lastSlot = mainHandSlots[lastSlotIdx]
-            val drawnFaceLeft = lastSlot.faceLeft + lastSlot.faceW  // 紧接手牌右边界，不硬编码间距
+            val drawnFaceLeft = lastSlot.faceLeft + lastSlot.faceW + 45  // 固定间距45px
             TileSlot(
                 slotLeft = drawnFaceLeft - 5,
                 slotTop = drawnSlot.slotTop,
@@ -464,7 +464,7 @@ object TileMatcher {
         if (dFaceRight <= gray.cols() && dFaceBottom <= gray.rows()) {
             // 副露时摸牌位置可能偏移, 扩大搜索范围
             var bestDrawnTile = -1; var bestDrawnScore = 0.0; var bestDrawnX = drawnSlotDynamic.faceLeft
-            for (dx in -5..50 step 3) {
+            for (dx in -20..20 step 3) {
                 val sx = (drawnSlotDynamic.faceLeft + dx).coerceIn(0, gray.cols() - drawnSlotDynamic.faceW)
                 val tileMat = Mat(gray, Rect(sx, detectedFaceY, drawnSlotDynamic.faceW, detectedFaceH))
                 val meanCheck = MatOfDouble()
@@ -922,7 +922,7 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
             }
             if (isInHandArea) continue
             // 排除摸牌位置(动态计算, 在最后手牌右+43px处)
-            val drawnX = mainHandSlots[handCount - 1].faceLeft + mainHandSlots[handCount - 1].faceW
+            val drawnX = mainHandSlots[handCount - 1].faceLeft + mainHandSlots[handCount - 1].faceW + 45
             if (kotlin.math.abs(h.x - drawnX) < 30) continue
             val overlap = filtered.any { k ->
                 val ix1 = maxOf(h.x, k.x); val iy1 = maxOf(h.y, k.y)
