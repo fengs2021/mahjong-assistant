@@ -454,14 +454,10 @@ class TemplateCollectorActivity : AppCompatActivity() {
         }
 
         val msg = if (currentTab == "meld")
-            "已保存 $saved/${slices.size} 张
-$skipped 张未标注(跳过)
-→ ${outDir.absolutePath}
-
-记得把.png文件移到 assets/meld_tiles/ 目录并重新编译"
+            "已保存 " + saved + "/" + slices.size + " 张\n" + skipped + " 张未标注(跳过)\n→ " + outDir.absolutePath +
+            "\n\n记得把.png文件移到 assets/meld_tiles/ 目录并重新编译"
         else
-            "$saved/${slices.size} 张 →
-${outDir.absolutePath}"
+            saved.toString() + "/" + slices.size + " 张 →\n" + outDir.absolutePath
 
         AlertDialog.Builder(this)
             .setTitle("保存完成")
