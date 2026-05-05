@@ -461,9 +461,10 @@ object TileMatcher {
 
         val dFaceRight = drawnSlotDynamic.faceLeft + drawnSlotDynamic.faceW
         val dFaceBottom = detectedFaceY + detectedFaceH
+        var bestDrawnTile = -1; var bestDrawnScore = 0.0; var bestDrawnX = 0
         if (dFaceRight <= gray.cols() && dFaceBottom <= gray.rows()) {
             // 副露时摸牌位置可能偏移, 扩大搜索范围
-            var bestDrawnTile = -1; var bestDrawnScore = 0.0; var bestDrawnX = drawnSlotDynamic.faceLeft
+            bestDrawnTile = -1; bestDrawnScore = 0.0; bestDrawnX = drawnSlotDynamic.faceLeft
             for (dx in -20..20 step 3) {
                 val sx = (drawnSlotDynamic.faceLeft + dx).coerceIn(0, gray.cols() - drawnSlotDynamic.faceW)
                 val tileMat = Mat(gray, Rect(sx, detectedFaceY, drawnSlotDynamic.faceW, detectedFaceH))
@@ -780,8 +781,8 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
     // 副露在手牌同高度右侧, 牌面约手牌等大
     // ═══════════════════════════════════════════
 
-    private fun scanMeldArea(screenshot: Bitmap, handY: Int, handH: Int, handCount: Int = 13, excludedIds: Set<Int> = emptySet()): List<MatchResult> {
-        FLog.i("TileMatcher", "scanMeldArea start")
+    private fun scanMeldArea(screenshot: Bitmap, handEndX: Int, drawnEndX: Int, excludedIds: Set<Int> = emptySet()): List<MatchResult> {
+        FLog.i("TileMatcher", "scanMeldArea start handEndX=$handEndX drawnEndX=$drawnEndX")
         val srcMat = Mat()
         Utils.bitmapToMat(screenshot, srcMat)
         val gray = Mat()
@@ -790,13 +791,11 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
 
         val imgW = gray.cols(); val imgH = gray.rows()
 
-        // 副露区域: 底部右侧, 以手牌y为基准向上扩50向下扩80 (覆盖杠牌横放上下分列)
-        val meldY = maxOf(0, handY - 50)
-        val meldH = minOf(handH + 130, imgH - meldY)
-        // meldX: 从最后一张手牌右边缘+10px开始, 避免扫到手牌
-        val lastHandEnd = mainHandSlots[minOf(handCount, 12)].faceLeft + 98 + 10
-        val meldX = maxOf(lastHandEnd, 1150)
+        // 副露ROI: X=摸牌右+10~画面右, Y=1000~手牌底(1249)
+        val meldX = (if (drawnEndX > handEndX) drawnEndX else handEndX + 98) + 10
         val meldW = imgW - meldX
+        val meldY = 1000
+        val meldH = minOf(1106 + 143 - meldY, imgH - meldY)
 
         if (meldW < 50 || meldH < 30) {
             gray.release()
@@ -810,144 +809,86 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
         clahe.apply(roiRaw, roi)
         roiRaw.release()
 
-        FLog.i("TileMatcher", "副露ROI: x=$meldX y=$meldY w=$meldW h=$meldH (img=${imgW}x$imgH)")
+        FLog.i("TileMatcher", "副露ROI: x=$meldX y=$meldY w=$meldW h=$meldH")
 
-        data class Hit(val tileId: Int, val x: Int, val y: Int, val w: Int, val h: Int, val score: Double)
-        val hits = mutableListOf<Hit>()
+        data class MeldHit(val tileId: Int, val direction: String, val x: Int, val y: Int, val w: Int, val h: Int, val score: Double)
+        val allHits = mutableListOf<MeldHit>()
 
-        // 副露牌与手牌等大(~98×143), 缩放 0.85~1.15, 阈值降低容忍副露渲染差异
-        val meldTargetH = 143.0
-        val minScale = 0.85
-        val maxScale = 1.15
-        val scaleSteps = 7   // 0.85 + 6*0.05 = 1.15
-        val meldThreshold = 0.40  // 副露渲染不同于手牌, Python实测0.20-0.47
-
-        // 方向: 0°(竖放), 90°CW(横放左), 270°CW(横放右)
-        val templateRots = intArrayOf(-1, Core.ROTATE_90_CLOCKWISE, Core.ROTATE_90_COUNTERCLOCKWISE)
-        for ((tileId, template) in templates) {
-            if (tileId == 31) continue
-            val th = meldThreshold
-
-            for (rot in templateRots) {
-                val tSrc = if (rot == -1) template else {
-                    val r = Mat(); Core.rotate(template, r, rot); r
-                }
-                val tH = tSrc.rows().toDouble()
-                val tW = tSrc.cols().toDouble()
-                val targetScale = meldTargetH / tH
-
-                val templateEq = Mat()
-                clahe.apply(tSrc, templateEq)
-                if (rot != -1) tSrc.release()
-
-                for (i in 0 until scaleSteps) {
-                    val scale = targetScale * (minScale + i * (maxScale - minScale) / (scaleSteps - 1))
-                    val sw = (tW * scale).toInt()
-                    val sh = (tH * scale).toInt()
-                    if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
-
-                    val resized = Mat()
-                    Imgproc.resize(templateEq, resized, Size(sw.toDouble(), sh.toDouble()))
-                    val result = Mat()
-                    Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
-                    val mm = Core.minMaxLoc(result)
-                    if (mm.maxVal >= th) {
-                        hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), sw, sh, mm.maxVal))
-                    }
-                    result.release(); resized.release()
-                }
-                templateEq.release()
-            }
-        }
-
-        // ─── 副露专用模板匹配 (宽高比~1:1, 从截图中采集) ───
+        // ─── 副露专用模板匹配 (v7.0: 只用副露模板, 阈值0.70) ───
         for ((tileId, meldPair) in meldTemplates) {
-            val (vertTmpl, horzTmpl) = meldPair
-            // 竖放副露匹配
-            if (vertTmpl != null) {
-                val vH = vertTmpl.rows().toDouble(); val vW = vertTmpl.cols().toDouble()
-                val vertEq = Mat(); clahe.apply(vertTmpl, vertEq)
-                val vTargetScale = 1.0  // 副露模板尺寸即目标尺寸
-                for (i in 0 until 7) {
-                    val scale = vTargetScale * (0.85 + i * 0.30 / 6)
-                    val sw = (vW * scale).toInt(); val sh = (vH * scale).toInt()
+            // 竖放
+            if (meldPair.first != null) {
+                val t = meldPair.first!!; val tH = t.rows(); val tW = t.cols()
+                val eq = Mat(); clahe.apply(t, eq)
+                for (s in doubleArrayOf(0.87, 0.93, 0.97, 1.0, 1.03, 1.07)) {
+                    val sw = (tW * s).toInt(); val sh = (tH * s).toInt()
                     if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
-                    val resized = Mat()
-                    Imgproc.resize(vertEq, resized, Size(sw.toDouble(), sh.toDouble()))
-                    val result = Mat()
-                    Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
-                    val mm = Core.minMaxLoc(result)
-                    if (mm.maxVal >= meldThreshold) {
-                        hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), sw, sh, mm.maxVal))
+                    val rsz = Mat(); Imgproc.resize(eq, rsz, Size(sw.toDouble(), sh.toDouble()))
+                    val res = Mat(); Imgproc.matchTemplate(roi, rsz, res, Imgproc.TM_CCOEFF_NORMED)
+                    val mm = Core.minMaxLoc(res)
+                    if (mm.maxVal >= 0.70) {
+                        allHits.add(MeldHit(tileId, "竖", meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), sw, sh, mm.maxVal))
                     }
-                    result.release(); resized.release()
+                    res.release(); rsz.release()
                 }
-                vertEq.release()
+                eq.release()
             }
-            // 横放副露匹配
-            if (horzTmpl != null) {
-                val hH = horzTmpl.rows().toDouble(); val hW = horzTmpl.cols().toDouble()
-                val horzEq = Mat(); clahe.apply(horzTmpl, horzEq)
-                val hTargetScale = 1.0  // 副露模板尺寸即目标尺寸
-                for (i in 0 until 7) {
-                    val scale = hTargetScale * (0.85 + i * 0.30 / 6)
-                    val sw = (hW * scale).toInt(); val sh = (hH * scale).toInt()
+            // 横放
+            if (meldPair.second != null) {
+                val t = meldPair.second!!; val tH = t.rows(); val tW = t.cols()
+                val eq = Mat(); clahe.apply(t, eq)
+                for (s in doubleArrayOf(0.87, 0.93, 0.97, 1.0, 1.03, 1.07)) {
+                    val sw = (tW * s).toInt(); val sh = (tH * s).toInt()
                     if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
-                    val resized = Mat()
-                    Imgproc.resize(horzEq, resized, Size(sw.toDouble(), sh.toDouble()))
-                    val result = Mat()
-                    Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
-                    val mm = Core.minMaxLoc(result)
-                    if (mm.maxVal >= meldThreshold) {
-                        hits.add(Hit(tileId, meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), sw, sh, mm.maxVal))
+                    val rsz = Mat(); Imgproc.resize(eq, rsz, Size(sw.toDouble(), sh.toDouble()))
+                    val res = Mat(); Imgproc.matchTemplate(roi, rsz, res, Imgproc.TM_CCOEFF_NORMED)
+                    val mm = Core.minMaxLoc(res)
+                    if (mm.maxVal >= 0.70) {
+                        allHits.add(MeldHit(tileId, "横", meldX + mm.maxLoc.x.toInt(), meldY + mm.maxLoc.y.toInt(), sw, sh, mm.maxVal))
                     }
-                    result.release(); resized.release()
+                    res.release(); rsz.release()
                 }
-                horzEq.release()
+                eq.release()
             }
         }
 
         roi.release(); gray.release()
 
-        // NMS去重: IoU>0.2合并, 保留最高分
-        hits.sortByDescending { it.score }
-        val filtered = mutableListOf<Hit>()
-        for (h in hits) {
-            // 排除已知手牌类型(已在手牌中识别的牌种, 避免重复计数)
+        // ─── 聚类: 同tileId+同方向+X间距<35px聚合, 取最高分 ───
+        allHits.sortBy { it.x }
+        val clusters = mutableListOf<MutableList<MeldHit>>()
+        for (h in allHits) {
+            // 排除已在手牌中识别的牌种
             if (h.tileId in excludedIds) continue
-            // 排除手牌区域: x在已知hand slot位置±20px内
-            val isInHandArea = (0 until handCount).any { i ->
-                val hx = mainHandSlots[i].faceLeft
-                kotlin.math.abs(h.x - hx) < 25
+            // 排除手牌区域
+            if (h.x < handEndX - 20) continue
+            var merged = false
+            for (c in clusters) {
+                val rep = c.last()
+                if (rep.tileId == h.tileId && rep.direction == h.direction && kotlin.math.abs(h.x - rep.x) < 35) {
+                    c.add(h); merged = true; break
+                }
             }
-            if (isInHandArea) continue
-            // 排除摸牌位置(动态计算, 在最后手牌右+43px处)
-            val drawnX = mainHandSlots[handCount - 1].faceLeft + mainHandSlots[handCount - 1].faceW + 45
-            if (kotlin.math.abs(h.x - drawnX) < 30) continue
-            val overlap = filtered.any { k ->
-                val ix1 = maxOf(h.x, k.x); val iy1 = maxOf(h.y, k.y)
-                val ix2 = minOf(h.x + h.w, k.x + k.w); val iy2 = minOf(h.y + h.h, k.y + k.h)
-                if (ix1 < ix2 && iy1 < iy2) {
-                    val inter = (ix2 - ix1) * (iy2 - iy1).toDouble()
-                    val union = (h.w * h.h + k.w * k.h).toDouble() - inter
-                    inter / union > 0.2
-                } else false
-            }
-            if (!overlap) filtered.add(h)
+            if (!merged) clusters.add(mutableListOf(h))
         }
+        val filtered = clusters.map { it.maxByOrNull { h -> h.score }!! }
 
+        // 每种牌上限4张, 转为MatchResult
         val count = IntArray(34)
-        val final = mutableListOf<Hit>()
+        val final = mutableListOf<MatchResult>()
         for (h in filtered) {
-            if (count[h.tileId] < 4) { final.add(h); count[h.tileId]++ }
+            if (count[h.tileId] < 4) {
+                final.add(MatchResult(h.tileId, h.score, h.score < 0.70))
+                count[h.tileId]++
+            }
         }
 
-        FLog.i("TileMatcher", "scanMeldArea done: ${hits.size} raw → ${filtered.size} dedup → ${final.size} final")
+        FLog.i("TileMatcher", "scanMeldArea done: ${allHits.size} raw → ${filtered.size} dedup → ${final.size} final")
         android.util.Log.i(TAG, "副露: ${final.size}张 " + final.joinToString(" ") {
-            "${Tiles.name(it.tileId)}@(${it.x},${it.y}) ${"%.2f".format(it.score)}"
+            "${Tiles.name(it.tileId)} ${"%.2f".format(it.confidence)}"
         })
 
-        return final.map { MatchResult(it.tileId, it.score, it.score < 0.55) }
+        return final
     }
 
     // ─── Canny区域匹配 (保留用于校准) ───
