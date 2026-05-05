@@ -14,7 +14,6 @@ import androidx.appcompat.app.AppCompatActivity
 import com.mahjong.assistant.capture.TileMatcher
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.math.maxOf
 
 /**
  * 模板采集器 v2：3 Tab — 手牌/副露/河底
@@ -269,7 +268,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
         for ((sx, ex) in merged) {
             val cx = meldX + sx; val cw = ex - sx
             // 粗切ROI
-            val roiY1 = maxOf(0, HAND_FACE_Y - 30)
+            val roiY1 = Math.max(0, HAND_FACE_Y - 30)
             val roiH = minOf(HAND_FACE_H + 60, ih - roiY1)
             val roiPixels = IntArray(cw * roiH)
             img.getPixels(roiPixels, 0, cw, cx, roiY1, cw, roiH)
@@ -292,7 +291,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 }
                 if (rowSum.toDouble() / cw > 80) { bot = roiY1 + y + 1; break }
             }
-            val fh = maxOf(bot - top, 20)
+            val fh = Math.max(bot - top, 20)
             if (fh < 20 || cw < 15) continue
 
             val bmp = Bitmap.createBitmap(img, cx, top, cw, fh)
@@ -360,7 +359,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
         // 裁剪图
         val dstH = dp(52)
-        val dstW = (s.bmp.width * dstH / s.bmp.height).coerceIn(dp(24), dp(56))
+        val dstW = Math.min(dp(56), Math.max(dp(24), s.bmp.width * dstH / s.bmp.height))
         row.addView(ImageView(this).apply {
             setImageBitmap(Bitmap.createScaledBitmap(s.bmp, dstW, dstH, true))
             setBackgroundColor(0xFF1A2A1A.toInt())
