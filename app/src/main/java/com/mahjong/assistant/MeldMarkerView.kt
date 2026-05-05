@@ -150,9 +150,10 @@ class MeldMarkerView @JvmOverloads constructor(
                     invalidate()
                     if (currentAnnotation!!.points.size == 4) {
                         annotations.add(currentAnnotation!!)
-                        onAnnotationComplete?.invoke(currentAnnotation!!)
+                        val ann = currentAnnotation!!
                         currentAnnotation = null
                         mode = Mode.PAN
+                        post { onAnnotationComplete?.invoke(ann) }
                     }
                     return true
                 }
