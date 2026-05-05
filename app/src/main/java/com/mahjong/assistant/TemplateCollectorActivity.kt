@@ -295,26 +295,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
         val meldW = iw - meldX
         if (meldW < 20 || roiH < 20) return
 
-        data class MeldHit(val tid: Int, val x: Int, val y: Int, val w: Int, val h: Int, val score: Double)
-        val hits = mutableListOf<MeldHit>()
-
-        // 用TileMatcher识别每张牌, 再做位置去重
-        for (tid in 0..33) {
-            if (tid == 31) continue
-            val result = TileMatcher.identifySingleTile(
-                Bitmap.createBitmap(img, meldX, roiY, 1, 1)  // dummy, use scanMeldArea approach instead
-            )
-        }
-
-        // 用模板匹配搜索每张牌
-        val rots = intArrayOf(Core.ROTATE_90_CLOCKWISE, Core.ROTATE_90_COUNTERCLOCKWISE)
-        for (tid in 0..33) {
-            if (tid == 31) continue
-            // 用TileMatcher的matchSingleTile做方向感知匹配是更好的, 但这里简化: 在ROI内多尺度搜索
-            // 注意: 这里不调用TileMatcher因为它在capture包没有公开模板访问
-        }
-        
-        // 简化: 直接扫亮块切, 再让自动识别标注
+        // 直接扫亮块切, 再让自动识别标注
         val pixels = IntArray(meldW * roiH)
         img.getPixels(pixels, 0, meldW, meldX, roiY, meldW, roiH)
 
