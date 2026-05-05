@@ -189,11 +189,20 @@ class TemplateCollectorActivity : AppCompatActivity() {
     private fun loadAndSlice() {
         val path = pathInput.text.toString().trim()
         if (path.isEmpty()) { Toast.makeText(this, "输入截图路径", Toast.LENGTH_SHORT).show(); return }
-        val file = File(path)
-        if (!file.exists()) { statusLabel.text = "✗ 文件不存在"; return }
+
         try {
             currentBitmap?.recycle()
-            currentBitmap = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 })
+            val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+
+            // 支持文件路径和content:// URI两种方式
+            currentBitmap = if (path.startsWith("content://")) {
+                contentResolver.openInputStream(Uri.parse(path))?.use { BitmapFactory.decodeStream(it, null, opts) }
+            } else {
+                val file = File(path)
+                if (!file.exists()) { statusLabel.text = "✗ 文件不存在: $path"; return@loadAndSlice }
+                BitmapFactory.decodeFile(path, opts)
+            }
+
             if (currentBitmap == null) { statusLabel.text = "✗ 无法解码"; return }
             val w = currentBitmap!!.width; val h = currentBitmap!!.height
             statusLabel.text = "截图 ${w}×${h} — $currentTab"
@@ -505,23 +514,9 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 pathInput.setText(realPath)
                 loadAndSlice()
             } else {
-                // 降级: 用content:// URI加载
+                // 降级: 直接用content:// URI(新loadAndSlice支持)
                 pathInput.setText(selectedUri.toString())
-                try {
-                    val inputStream = contentResolver.openInputStream(selectedUri!!)
-                    currentBitmap?.recycle()
-                    currentBitmap = BitmapFactory.decodeStream(inputStream)
-                    inputStream?.close()
-                    if (currentBitmap != null) {
-                        val w = currentBitmap!!.width; val h = currentBitmap!!.height
-                        statusLabel.text = "截图 ${w}×${h} — $currentTab ($name)"
-                        doSlice()
-                    } else {
-                        statusLabel.text = "✗ 无法解码图片"
-                    }
-                } catch (e: Exception) {
-                    statusLabel.text = "✗ ${e.message}"
-                }
+                loadAndSlice()
             }
         }
     }
