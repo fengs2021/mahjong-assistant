@@ -153,7 +153,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
             // 保存
             Button(this).apply {
-                text = "💾 保存全部 ($currentTab)"
+                text = "💾 保存全部"
                 textSize = 14f
                 setBackgroundColor(0xFF2D6A2D.toInt()); setTextColor(0xFF5CFF5C.toInt())
                 setPadding(0, 12, 0, 12)
@@ -374,9 +374,9 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
         // 自动识别 (所有tab)
         val autoResult = autoIdentify(s.bmp)
-        val autoName = if (autoResult != null && autoResult.second >= 0.70) tileNames.getOrNull(autoResult.first) else null
+        val autoName = if (autoResult != null && autoResult.second >= (if (currentTab == "meld") 0.20 else 0.85)) tileNames.getOrNull(autoResult.first) else null
         val autoLabel = if (autoName != null) autoName else "未识别"
-        val autoScore = if (autoResult != null) "%.2f".format(autoResult.second) else ""
+        val autoScore = if (autoResult != null) String.format("%.2f", autoResult.second) else ""
 
         // Spinner
         val spinner = Spinner(this).apply {
@@ -405,10 +405,14 @@ class TemplateCollectorActivity : AppCompatActivity() {
             autoName != null -> 0xFFA0C040.toInt()
             else -> 0xFF606060.toInt()
         }
+        val showText = when {
+            autoName != null -> "$autoLabel $autoScore"
+            autoResult != null -> "最佳:" + tileNames[autoResult.first] + " " + String.format("%.2f", autoResult.second)
+            else -> "未识别"
+        }
         row.addView(TextView(this).apply {
-            text = if (autoName != null) "$autoLabel $autoScore" else "未识别"
-            textSize = 9f; setTextColor(labelColor)
-            layoutParams = LinearLayout.LayoutParams(dp(68), LinearLayout.LayoutParams.WRAP_CONTENT)
+            text = showText; textSize = 9f; setTextColor(labelColor)
+            layoutParams = LinearLayout.LayoutParams(dp(76), LinearLayout.LayoutParams.WRAP_CONTENT)
         })
 
         tileContainer.addView(row)
