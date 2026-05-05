@@ -32,7 +32,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
     private lateinit var statusLabel: TextView
     private lateinit var contentArea: FrameLayout
     private lateinit var scrollContent: LinearLayout
-    private lateinit var tabHand: Button; private lateinit var tabMeld: Button; private lateinit var tabRiver: Button
+    private lateinit var tabHand: Button; private lateinit var tabMeld: Button; private lateinit var tabRiver: Button; private lateinit var tabCoord: Button
     private var currentBitmap: Bitmap? = null; private var currentTab = "hand"; private var selectedUri: Uri? = null
     private lateinit var meldMarkerView: MeldMarkerView
     private lateinit var btnAddAnn: Button; private lateinit var btnDoneAnn: Button; private lateinit var btnDelAnn: Button
@@ -76,7 +76,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
             // Tab行
             val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 8, 0, 4) }
-            tabHand = makeTab("手牌", "hand", tabRow); tabMeld = makeTab("副露", "meld", tabRow); tabRiver = makeTab("河底", "river", tabRow)
+            tabHand = makeTab("手牌", "hand", tabRow); tabMeld = makeTab("副露", "meld", tabRow); tabRiver = makeTab("河底", "river", tabRow); tabCoord = makeTab("坐标", "coord", tabRow)
             root.addView(tabRow)
             statusLabel = TextView(this).apply {
                 text = "输入路径后点「加载」"; textSize = 11f; setTextColor(0xFF80B080.toInt()); setPadding(0, 4, 0, 4); gravity = Gravity.CENTER
@@ -140,7 +140,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
     private fun switchTab(tag: String) {
         FLog.i("CollAct", "switchTab → $tag"); currentTab = tag
-        for ((btn, t) in listOf(tabHand to "hand", tabMeld to "meld", tabRiver to "river")) {
+        for ((btn, t) in listOf(tabHand to "hand", tabMeld to "meld", tabRiver to "river", tabCoord to "coord")) {
             if (t == tag) { btn.setBackgroundColor(0xFF2D6A2D.toInt()); btn.setTextColor(0xFF5CFF5C.toInt()) }
             else { btn.setBackgroundColor(0xFF2D3A2D.toInt()); btn.setTextColor(0xFF80B080.toInt()) }
         }
@@ -184,7 +184,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 sliceHandAndDrawn(img)
                 for ((i, s) in slices.withIndex()) addSliceRow(i, s, scrollContent)
             }
-            "meld", "river" -> {
+            "meld", "river", "coord" -> {
                 // 原图直接标注,不裁子图
                 meldMarkerView.setImage(img)
                 meldMarkerView.visibility = View.VISIBLE
@@ -193,7 +193,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 slices.clear()
         }
         FLog.i("CollAct", "doSlice done: ${slices.size} slices, ${meldMarkerView.getAnnotations().size} annotations")
-        statusLabel.text = "截图 ${img.width}×${img.height} — $currentTab: ${if (currentTab == "meld" || currentTab == "river") "${meldMarkerView.getAnnotations().size}标" else "${slices.size}张"}"
+        statusLabel.text = "截图 ${img.width}×${img.height} — $currentTab: ${if (currentTab != "hand") "${meldMarkerView.getAnnotations().size}标" else "${slices.size}张"}"
     }
 
     // ═══════ 副露手动标注 ═══════
@@ -240,29 +240,31 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 })
             }
 
-            // Spinner
+            // Spinner: 坐标Tab用区域名, 其他用牌名
             val spinner = Spinner(this).apply {
-                val options = mutableListOf("未识别"); options.addAll(tileNames)
+                val options = if (currentTab == "coord") mutableListOf("自家手牌","自家摸牌","对家","上家","下家","牌河全图") else mutableListOf("未识别").also { it.addAll(tileNames) }
                 adapter = ArrayAdapter(this@TemplateCollectorActivity, android.R.layout.simple_spinner_dropdown_item, options)
                 setBackgroundColor(0xFF2D3A2D.toInt()); setPopupBackgroundDrawable(ColorDrawable(0xFF1A2E1A.toInt()))
-                if (ann.label != "未识别") { val idx = tileNames.indexOf(ann.label); if (idx >= 0) setSelection(idx + 1) }
+                if (ann.label !in listOf("未识别","未知") && options.contains(ann.label)) setSelection(options.indexOf(ann.label))
                 setOnItemSelectedListener(object : AdapterView.OnItemSelectedListener {
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) { ann.label = parent?.getItemAtPosition(pos)?.toString() ?: "未识别" }
                     override fun onNothingSelected(parent: AdapterView<*>?) {}
                 }); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }; row.addView(spinner)
 
-            // 方向切换
-            Button(this).apply {
-                text = ann.direction; textSize = 10f
-                setBackgroundColor(if (ann.direction == "竖") 0xFF2D3A6D.toInt() else 0xFF3D6A2D.toInt())
-                setTextColor(0xFFA0C0FF.toInt()); setPadding(dp(6), dp(2), dp(6), dp(2))
-                setOnClickListener { v ->
-                    ann.direction = if (ann.direction == "竖") "横" else "竖"
-                    (v as Button).text = ann.direction
-                    v.setBackgroundColor(if (ann.direction == "竖") 0xFF2D3A6D.toInt() else 0xFF3D6A2D.toInt())
-                }
-            }.also { row.addView(it) }
+            // 方向切换(坐标Tab隐藏)
+            if (currentTab != "coord") {
+                Button(this).apply {
+                    text = ann.direction; textSize = 10f
+                    setBackgroundColor(if (ann.direction == "竖") 0xFF2D3A6D.toInt() else 0xFF3D6A2D.toInt())
+                    setTextColor(0xFFA0C0FF.toInt()); setPadding(dp(6), dp(2), dp(6), dp(2))
+                    setOnClickListener { v ->
+                        ann.direction = if (ann.direction == "竖") "横" else "竖"
+                        (v as Button).text = ann.direction
+                        v.setBackgroundColor(if (ann.direction == "竖") 0xFF2D3A6D.toInt() else 0xFF3D6A2D.toInt())
+                    }
+                }.also { row.addView(it) }
+            }
 
             // 调整按钮
             Button(this).apply {
@@ -366,7 +368,8 @@ class TemplateCollectorActivity : AppCompatActivity() {
         when (currentTab) {
             "meld" -> saveAnnotationsTo("meld_tiles")
             "river" -> saveAnnotationsTo("river_tiles")
-            else -> Toast.makeText(this, "手牌模板已完善(34/34)，无需重复采集。请切换到副露/牌河Tab标注后保存", Toast.LENGTH_LONG).show()
+            "coord" -> saveZoneCoords()
+            else -> Toast.makeText(this, "手牌模板已完善(34/34)，无需重复采集。请切换到副露/牌河/坐标Tab标注后保存", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -390,6 +393,24 @@ class TemplateCollectorActivity : AppCompatActivity() {
             .setMessage("已保存 $saved/${anns.size} 张\n$skipped 张未标注(跳过)\n→ ${outDir.absolutePath}\n\n记得把.png文件移到 assets/$subdir/ 目录并重新编译")
             .setPositiveButton("确定", null).show()
         statusLabel.text = "已保存 $saved 张"
+    }
+
+    private fun saveZoneCoords() {
+        val anns = meldMarkerView.getAnnotations()
+        if (anns.isEmpty()) { Toast.makeText(this, "请先添加标注", Toast.LENGTH_SHORT).show(); return }
+        val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "mahjong_templates")
+        if (!outDir.exists()) outDir.mkdirs()
+        val sb = StringBuilder()
+        for (ann in anns) {
+            val b = ann.bounds
+            sb.appendLine("${ann.label}: (${b.left},${b.top})-(${b.right},${b.bottom})")
+        }
+        val f = File(outDir, "river_zones.txt")
+        f.writeText(sb.toString())
+        FLog.i("CollAct", "坐标保存: ${anns.size} 个区域")
+        AlertDialog.Builder(this).setTitle("坐标已保存")
+            .setMessage("${anns.size} 个区域:\n${sb.toString().trim()}\n→ ${f.absolutePath}")
+            .setPositiveButton("确定", null).show()
     }
 
     private fun findLatestScreenshot(): String? {
