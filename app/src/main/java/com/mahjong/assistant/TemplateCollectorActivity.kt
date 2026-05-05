@@ -12,6 +12,9 @@ import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.mahjong.assistant.capture.TileMatcher
+import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
 import java.io.File
 import java.io.FileOutputStream
 
@@ -64,6 +67,11 @@ class TemplateCollectorActivity : AppCompatActivity() {
     private lateinit var tabRiver: Button
     private var currentBitmap: Bitmap? = null
     private var currentTab = "hand"
+    private var selectedUri: Uri? = null
+
+    companion object {
+        private const val REQUEST_PICK_IMAGE = 1001
+    }
 
     // 切割结果
     data class TileSlice(val id: String, val bmp: Bitmap, var label: String)
@@ -87,21 +95,34 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 setPadding(0, 0, 0, 8)
             }.also { root.addView(it) }
 
-            // 路径行
+            // 路径行: [选择] [输入框] [加载]
             val pathRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            Button(this).apply {
+                text = "选择"; textSize = 12f
+                setBackgroundColor(0xFF2D6A2D.toInt()); setTextColor(0xFF80B080.toInt())
+                setPadding(dp(8), dp(6), dp(8), dp(6))
+                setOnClickListener {
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "image/*"
+                        putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/jpeg", "image/png"))
+                    }
+                    startActivityForResult(intent, REQUEST_PICK_IMAGE)
+                }
+            }.also { pathRow.addView(it) }
             pathInput = EditText(this).apply {
                 hint = "/sdcard/Download/screenshot.jpg"
                 setTextColor(0xFFA0F0A0.toInt()); setHintTextColor(0xFF446644.toInt())
                 setBackgroundColor(0xFF2D3A2D.toInt())
-                setPadding(12, 8, 12, 8); textSize = 13f
+                setPadding(8, 8, 8, 8); textSize = 12f
                 val recent = findLatestScreenshot()
                 if (recent != null) setText(recent)
             }
             pathRow.addView(pathInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             Button(this).apply {
-                text = "加载"; textSize = 13f
+                text = "加载"; textSize = 12f
                 setBackgroundColor(0xFF2D6A2D.toInt()); setTextColor(0xFF5CFF5C.toInt())
-                setPadding(16, 8, 16, 8)
+                setPadding(dp(8), dp(6), dp(8), dp(6))
                 setOnClickListener { loadAndSlice() }
             }.also { pathRow.addView(it) }
             root.addView(pathRow)
@@ -474,6 +495,71 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
     private fun minOf(a: Int, b: Int) = if (a < b) a else b
+
+    @Deprecated("Use registerForActivityResult")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_PICK_IMAGE && resultCode == RESULT_OK && data?.data != null) {
+            selectedUri = data.data
+            val name = getFileName(selectedUri!!)
+            // 尝试将URI转为真实路径
+            val realPath = getRealPathFromUri(selectedUri!!)
+            if (realPath != null) {
+                pathInput.setText(realPath)
+                loadAndSlice()
+            } else {
+                // 降级: 用content:// URI加载
+                pathInput.setText(selectedUri.toString())
+                try {
+                    val inputStream = contentResolver.openInputStream(selectedUri!!)
+                    currentBitmap?.recycle()
+                    currentBitmap = BitmapFactory.decodeStream(inputStream)
+                    inputStream?.close()
+                    if (currentBitmap != null) {
+                        val w = currentBitmap!!.width; val h = currentBitmap!!.height
+                        statusLabel.text = "截图 ${w}×${h} — $currentTab ($name)"
+                        doSlice()
+                    } else {
+                        statusLabel.text = "✗ 无法解码图片"
+                    }
+                } catch (e: Exception) {
+                    statusLabel.text = "✗ ${e.message}"
+                }
+            }
+        }
+    }
+
+    private fun getFileName(uri: Uri): String {
+        var name = "unknown"
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (cursor.moveToFirst() && idx >= 0) name = cursor.getString(idx)
+        }
+        return name
+    }
+
+    private fun getRealPathFromUri(uri: Uri): String? {
+        // 最常见: /storage/emulated/0/Download/xxx.jpg
+        val docId = uri.lastPathSegment
+        if (docId != null && docId.contains(":")) {
+            val split = docId.split(":")
+            if (split.size >= 2) {
+                val path = split[1]
+                if (path.startsWith("/")) return path
+                // primary:Download/xxx.jpg
+                return "/storage/emulated/0/$path"
+            }
+        }
+        // content://media/external/images/media/xxx
+        val proj = arrayOf(android.provider.MediaStore.Images.Media.DATA)
+        try {
+            contentResolver.query(uri, proj, null, null, null)?.use { cursor ->
+                val idx = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.DATA)
+                if (cursor.moveToFirst()) return cursor.getString(idx)
+            }
+        } catch (_: Exception) {}
+        return null
+    }
 
     override fun onDestroy() {
         super.onDestroy()
