@@ -387,9 +387,10 @@ class TemplateCollectorActivity : AppCompatActivity() {
         var saved = 0; var skipped = 0
         for (ann in anns) {
             if (ann.label == "未识别" || ann.label == "未知") { skipped++; continue }
-            val crop = meldMarkerView.cropAnnotation(ann) ?: run { skipped++; continue }
+            val crop = meldMarkerView.cropAnnotation(ann)
+            if (crop == null) { skipped++; continue }
             var candidate = "${ann.label}_${ann.direction}.png"; var counter = 2
-            while (File(outDir, candidate).exists()) { candidate = "${ann.label}_${direction}${counter}.png"; counter++ }
+            while (File(outDir, candidate).exists()) { candidate = "${ann.label}_${ann.direction}${counter}.png"; counter++ }
             try { FileOutputStream(File(outDir, candidate)).use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }; saved++ } catch (_: Exception) { skipped++ }
         }
         FLog.i("CollAct", "meld保存: $saved/$saved+$skipped")
