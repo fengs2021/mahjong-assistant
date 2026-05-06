@@ -357,12 +357,17 @@ object TileMatcher {
                 val results = categorizeYoloDetections(detections, screenshot.height)
                 lastYoloDetections = detections
                 if (results.isNotEmpty()) {
-                    // 从手牌检测推导 lastHandY/lastHandH (给模板匹配降级用)
+                    // 交叉验证: 底部低置信度YOLO结果用模板匹配覆盖
+                    val validated = crossValidateBottom(results, detections, screenshot)
                     val handOnly = detections.filter { it.y1 > screenshot.height * 0.7 }.sortedBy { it.x1 }
                     if (handOnly.isNotEmpty()) {
                         lastHandY = handOnly.map { it.y1 }.minOrNull() ?: 1106
                         lastHandH = handOnly.map { it.y2 - it.y1 }.maxOrNull() ?: 143
                     }
+                    val tileIds = validated.map { it.tileId }.toIntArray()
+                    FLog.i("TileMatcher", "YOLO: ${detections.size} detections → ${validated.size} 结果 (交叉验证后)")
+                    android.util.Log.i(TAG, "YOLO: ${Tiles.toDisplayString(tileIds.copyOfRange(0, minOf(14, tileIds.size)))}")
+                    return Pair(validated, if (validated.isNotEmpty()) 0.95 else -1.0)
                 }
                 val tileIds = results.map { it.tileId }.toIntArray()
                 FLog.i("TileMatcher", "YOLO: ${detections.size} detections → ${results.size} 结果")
@@ -438,6 +443,56 @@ object TileMatcher {
         RiverRegion("上家(东)",  802, 297, 1190, 653),
         RiverRegion("下家(西)", 1605, 302, 1991, 663)
     )
+
+    // ═══════════════════════════════════════════
+    // 交叉验证: YOLO低置信度 → 模板匹配覆盖
+    // ═══════════════════════════════════════════
+
+    /**
+     * 对底部牌用模板匹配交叉验证: YOLO置信度<0.4时, 用模板匹配结果覆盖。
+     * 模板匹配对手牌精度极高(0.99+), 能自动纠正YOLO误检。
+     */
+    private fun crossValidateBottom(
+        results: List<MatchResult>,
+        detections: List<YoloDetector.Detection>,
+        screenshot: Bitmap
+    ): List<MatchResult> {
+        if (!templatesLoaded || !opencvReady || results.isEmpty()) return results
+
+        val validated = results.toMutableList()
+        var corrected = 0
+        for ((idx, r) in results.withIndex()) {
+            if (r.confidence >= 0.4) continue  // YOLO高置信度不覆盖
+
+            // 在detections中找到对应的检测框(按顺序对应底部牌)
+            val d = detections.getOrNull(idx) ?: continue
+            if (d.y1 <= screenshot.height * 0.7 && d.y2 <= screenshot.height * 0.7) continue  // 非底部
+
+            // 裁剪牌面+模板匹配
+            val x = d.x1.coerceIn(0, screenshot.width - 1)
+            val y = d.y1.coerceIn(0, screenshot.height - 1)
+            val w = (d.x2 - d.x1).coerceIn(10, screenshot.width - x)
+            val h = (d.y2 - d.y1).coerceIn(10, screenshot.height - y)
+
+            try {
+                val tileBmp = Bitmap.createBitmap(screenshot, x, y, w, h)
+                val tmResult = identifySingleTile(tileBmp)
+                tileBmp.recycle()
+
+                if (tmResult != null && tmResult.second >= 0.85) {
+                    validated[idx] = MatchResult(tmResult.first, tmResult.second, false)
+                    corrected++
+                    FLog.i("TileMatcher", String.format(
+                        "  xval[%d]: YOLO=%s(%.2f) → TM=%s(%.3f)",
+                        idx, Tiles.name(r.tileId), r.confidence, Tiles.name(tmResult.first), tmResult.second))
+                }
+            } catch (e: Exception) {
+                // 裁剪失败忽略
+            }
+        }
+        if (corrected > 0) FLog.i("TileMatcher", "交叉验证: $corrected 张修正")
+        return validated
+    }
 
     // ═══════════════════════════════════════════
     // 四家河底数据 (为放铳率计算准备)
