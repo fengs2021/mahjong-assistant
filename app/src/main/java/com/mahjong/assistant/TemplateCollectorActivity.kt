@@ -47,7 +47,6 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
     // YOLO 检测缓存
     private var yoloDetections: List<YoloDetector.Detection> = emptyList()
-    private var yoloLabels: Map<Int, String> = emptyMap()  // slotIndex → tileName (手牌)
     private var yoloModelLoaded = false
 
     private lateinit var pathInput: EditText
@@ -241,27 +240,24 @@ class TemplateCollectorActivity : AppCompatActivity() {
         btnAddAnn.parent?.let { (it as View).visibility = View.GONE }
         isMeldAnnotationMode = false; meldMarkerView.mode = MeldMarkerView.Mode.PAN
 
-        // 固定坐标切14槽
-        sliceHandAndDrawn(img)
+        // 底部全部牌: 手牌+副露, 按x排序, 不再拆分
+        val bottomTiles = yoloDetections.filter { it.y1 > img.height * 0.7 || it.y2 > img.height * 0.7 }
+            .sortedBy { it.x1 }
 
-        // YOLO手牌检测: 底部左侧区域
-        val bottomTiles = yoloDetections.filter { it.y1 > img.height * 0.7 }.sortedBy { it.x1 }
-        val handTiles = bottomTiles.filter { it.x1 < 2000 }  // 粗略过滤副露
-        yoloLabels = emptyMap()
-
-        // 将YOLO检测按x位置匹配到最近的手牌slot
-        for ((slotIdx, s) in slices.withIndex()) {
-            val slotCenterX = HAND_FACE_X + (if (slotIdx < 13) slotIdx * HAND_SLOT_GAP else (handEndX - HAND_FACE_X)) + HAND_FACE_W / 2
-            val best = handTiles.minByOrNull { kotlin.math.abs((it.x1 + it.x2) / 2 - slotCenterX) }
-            if (best != null && kotlin.math.abs((best.x1 + best.x2) / 2 - slotCenterX) < 60) {
-                yoloLabels = yoloLabels + (slotIdx to best.tileName)
-            }
+        for (d in bottomTiles) {
+            val x1 = d.x1.coerceIn(0, img.width - 1)
+            val y1 = d.y1.coerceIn(0, img.height - 1)
+            val w = (d.x2 - d.x1).coerceIn(4, img.width - x1)
+            val h = (d.y2 - d.y1).coerceIn(4, img.height - y1)
+            val tileBmp = Bitmap.createBitmap(img, x1, y1, w, h)
+            val tileName = yoloToChinese(d.tileName) ?: "未识别"
+            val dir = if (w > h) "横" else "竖"
+            slices.add(TileSlice("${tileName}_${dir}", tileBmp, tileName))
         }
-        FLog.i("CollAct", "手牌YOLO: ${yoloLabels.size}/${slices.size} 自动标注")
 
-        // 渲染
+        FLog.i("CollAct", "底部全部: ${bottomTiles.size}张 (手牌+副露)")
         for ((i, s) in slices.withIndex()) addSliceRow(i, s, scrollContent)
-        statusLabel.text = "截图 ${img.width}x${img.height} — 手牌: ${slices.size}张 (YOLO:${yoloLabels.size})"
+        statusLabel.text = "截图 ${img.width}x${img.height} — 底部: ${slices.size}张 (YOLO)"
     }
 
     /**
@@ -494,16 +490,13 @@ class TemplateCollectorActivity : AppCompatActivity() {
             row.addView(TextView(this).apply { text = "${index+1}"; textSize = 9f; setTextColor(0xFF80B080.toInt()); setPadding(0, 0, 4, 0); layoutParams = LinearLayout.LayoutParams(dp(18), LinearLayout.LayoutParams.WRAP_CONTENT) })
             val dstH = dp(48); val dstW = Math.min(dp(52), Math.max(dp(22), s.bmp.width * dstH / s.bmp.height))
             row.addView(ImageView(this).apply { setImageBitmap(Bitmap.createScaledBitmap(s.bmp, dstW, dstH, true)); setBackgroundColor(0xFF1A2A1A.toInt()); layoutParams = LinearLayout.LayoutParams(dstW, dstH).apply { marginEnd = 6 } })
-            // YOLO标签优先, 降级模板匹配
-            val yoloName = yoloLabels[index]  // 格式: "1m", "3p", "7z" 等
-            val autoName = if (yoloName != null) {
-                yoloToChinese(yoloName)
-            } else {
+            // 标签已在 TileSlice.label 中 (YOLO自动标注)
+            val autoName = if (s.label != "未识别" && s.label.isNotEmpty()) s.label else {
                 val result = autoIdentify(s.bmp)
                 if (result != null && result.second >= 0.85) tileNames.getOrNull(result.first) else null
             }
             val autoLabel = autoName ?: "未识别"
-            FLog.i("CollAct", "  auto[$index]: $autoLabel (YOLO=${yoloName != null})")
+            FLog.i("CollAct", "  auto[$index]: $autoLabel")
             val spinner = Spinner(this).apply {
                 val options = mutableListOf("未识别"); options.addAll(tileNames)
                 adapter = ArrayAdapter(this@TemplateCollectorActivity, android.R.layout.simple_spinner_dropdown_item, options)
