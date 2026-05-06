@@ -18,6 +18,10 @@ import android.content.Intent
 import android.net.Uri
 import java.io.File
 import java.io.FileOutputStream
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.asRequestBody
+import java.io.IOException
 
 class TemplateCollectorActivity : AppCompatActivity() {
 
@@ -26,6 +30,8 @@ class TemplateCollectorActivity : AppCompatActivity() {
         const val HAND_FACE_X = 541; const val HAND_FACE_Y = 1106
         const val HAND_FACE_W = 98; const val HAND_FACE_H = 143
         const val HAND_SLOT_GAP = 111
+        private const val UPLOAD_URL = "http://111.229.221.200:4999/meld/upload"
+        private const val UPLOAD_TOKEN = "mahjong-upload-2024"
     }
 
     private lateinit var pathInput: EditText
@@ -367,20 +373,37 @@ class TemplateCollectorActivity : AppCompatActivity() {
         if (anns.isEmpty()) { Toast.makeText(this, "请先添加标注", Toast.LENGTH_SHORT).show(); return }
         val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "mahjong_templates/$subdir")
         if (!outDir.exists()) outDir.mkdirs()
-        var saved = 0; var skipped = 0
+        var saved = 0; var skipped = 0; var uploaded = 0
+        val client = OkHttpClient()
         for (ann in anns) {
             if (ann.label == "未识别" || ann.label == "未知") { skipped++; continue }
             val crop = meldMarkerView.cropAnnotation(ann)
             if (crop == null) { skipped++; continue }
             var candidate = "${ann.label}_${ann.direction}.png"; var counter = 2
             while (File(outDir, candidate).exists()) { candidate = "${ann.label}_${ann.direction}${counter}.png"; counter++ }
-            try { FileOutputStream(File(outDir, candidate)).use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }; saved++ } catch (_: Exception) { skipped++ }
+            // 1) 本地保存
+            try { FileOutputStream(File(outDir, candidate)).use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }; saved++ } catch (_: Exception) { skipped++; continue }
+            // 2) 上传服务器
+            try {
+                val tmpFile = File(cacheDir, "upload_tmp.png")
+                FileOutputStream(tmpFile).use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+                    .addFormDataPart("file", candidate, tmpFile.asRequestBody("image/png".toMediaType()))
+                    .addFormDataPart("label", ann.label)
+                    .addFormDataPart("direction", ann.direction)
+                    .build()
+                val request = Request.Builder().url(UPLOAD_URL).header("X-Auth-Token", UPLOAD_TOKEN).post(body).build()
+                val resp = client.newCall(request).execute()
+                FLog.i("CollAct", "upload $candidate → ${resp.code} ${resp.body?.string()}")
+                if (resp.isSuccessful) uploaded++
+                tmpFile.delete()
+            } catch (e: IOException) { FLog.e("CollAct", "upload fail $candidate", e) }
         }
-        FLog.i("CollAct", "$subdir 保存: $saved/$saved+$skipped")
-        AlertDialog.Builder(this).setTitle("保存完成")
-            .setMessage("已保存 $saved/${anns.size} 张\n$skipped 张未标注(跳过)\n→ ${outDir.absolutePath}\n\n记得把.png文件移到 assets/$subdir/ 目录并重新编译")
+        FLog.i("CollAct", "$subdir 保存: $saved/$saved+$skipped 上传: $uploaded")
+        AlertDialog.Builder(this).setTitle("完成")
+            .setMessage("本地保存: $saved 张\n上传服务器: $uploaded 张\n跳过: $skipped 张\n→ ${outDir.absolutePath}")
             .setPositiveButton("确定", null).show()
-        statusLabel.text = "已保存 $saved 张"
+        statusLabel.text = "保存 $saved | 上传 $uploaded"
     }
 
     private fun saveZoneCoords() {
