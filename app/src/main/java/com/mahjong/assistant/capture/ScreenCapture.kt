@@ -89,9 +89,6 @@ object TileMatcher {
     @Volatile var lastHandY: Int = 1106  // 上次检测到手牌y(自适应)
     @Volatile var lastHandH: Int = 143   // 上次检测到手牌h
 
-    // YOLO 检测缓存 (用于河底扫描复用)
-    @Volatile private var lastYoloDetections: List<YoloDetector.Detection> = emptyList()
-
     // ─── tileId映射 (兼容简繁体文件名) ───
     private val nameToId = mapOf(
         "一万" to 0,  "二万" to 1,  "三万" to 2,  "四万" to 3,  "五万" to 4,
@@ -443,84 +440,86 @@ object TileMatcher {
     )
 
     // ═══════════════════════════════════════════
-    // YOLO 检测结果分类: 手牌(底部左) + 副露(底部右) + 河底(中部)
+    // 四家河底数据 (为放铳率计算准备)
+    // ═══════════════════════════════════════════
+
+    data class FourRiverState(
+        val own: DefenseAnalyzer.RiverState,    // 自家(南)
+        val opposite: DefenseAnalyzer.RiverState, // 对家(北)
+        val left: DefenseAnalyzer.RiverState,     // 上家(东)
+        val right: DefenseAnalyzer.RiverState     // 下家(西)
+    )
+
+    // YOLO 检测缓存
+    @Volatile private var lastYoloDetections: List<YoloDetector.Detection> = emptyList()
+    // 四家河底缓存 (识别完成后再调用 scanAllRivers 获取)
+    @Volatile private var lastFourRiver: FourRiverState? = null
+
+    // ═══════════════════════════════════════════
+    // YOLO 检测结果分类: 底部全归手牌, 河底分四家
     // ═══════════════════════════════════════════
 
     /**
      * 将 YOLO 全图检测结果按空间位置分类:
-     *   - 底部 (y > imgH*0.75): 按 x 间隙自动拆分 → 手牌(左密集区) + 副露(右稀疏区)
-     *   - 中部 (y ≤ imgH*0.75): 河底牌
+     *   - 底部 (y > imgH*0.75): 全部归为手牌, 按x排序, 不拆分手牌/副露
+     *   - 中部 (y ≤ imgH*0.75): 按四方坐标分入四家河底
      */
     private fun categorizeYoloDetections(
         detections: List<YoloDetector.Detection>,
         imgHeight: Int
     ): List<MatchResult> {
-        // 1. 按 y 分为底部(手牌+副露)和中部(河底)
         val bottomThreshold = (imgHeight * 0.75).toInt()
+
+        // 底部全部归手牌, 按x排序 (不少于13张时能组成牌型)
         val bottomTiles = detections
             .filter { it.y1 > bottomThreshold || it.y2 > bottomThreshold }
             .sortedBy { it.x1 }
-        val riverTiles = detections
-            .filter { it.y1 <= bottomThreshold && it.y2 <= bottomThreshold }
 
-        // 河底按四方区域分类(仅用于日志)
-        val riverPerRegion = IntArray(riverRegions.size)
-        for (d in riverTiles) {
-            for ((idx, region) in riverRegions.withIndex()) {
-                if (region.contains(d)) { riverPerRegion[idx]++; break }
+        // 河底按四方区域分类
+        val riverPerRegion = Array(riverRegions.size) { mutableListOf<Int>() }
+        for (d in detections) {
+            if (d.tileId !in 0..33) continue
+            if (d.y1 <= bottomThreshold && d.y2 <= bottomThreshold) {
+                for ((idx, region) in riverRegions.withIndex()) {
+                    if (region.contains(d)) { riverPerRegion[idx].add(d.tileId); break }
+                }
             }
         }
 
-        // 2. 底部区域: 找最大 x 间隙自动拆分手牌/副露
-        val (handTiles, meldTiles) = splitBottomByXGap(bottomTiles)
-
-        // 3. 组装结果: 手牌在前, 副露在后
+        // 组装结果: 底部全部按x排序
         val results = mutableListOf<MatchResult>()
-        for (d in handTiles) {
+        for (d in bottomTiles) {
             if (d.tileId in 0..33) {
                 results.add(MatchResult(d.tileId, d.confidence.toDouble(), false))
             }
         }
-        for (d in meldTiles) {
-            if (d.tileId in 0..33) {
-                results.add(MatchResult(d.tileId, d.confidence.toDouble(), false))
-            }
-        }
+
+        // 构建四家河底状态
+        val zeroCounts = IntArray(34)
+        lastFourRiver = FourRiverState(
+            own = DefenseAnalyzer.RiverState(fromCounts(riverPerRegion[0]), riverPerRegion[0].toList()),
+            opposite = DefenseAnalyzer.RiverState(fromCounts(riverPerRegion[1]), riverPerRegion[1].toList()),
+            left = DefenseAnalyzer.RiverState(fromCounts(riverPerRegion[2]), riverPerRegion[2].toList()),
+            right = DefenseAnalyzer.RiverState(fromCounts(riverPerRegion[3]), riverPerRegion[3].toList())
+        )
 
         val riverBreakdown = riverRegions.mapIndexed { i, r ->
-            "${r.name}:${riverPerRegion[i]}"
+            String.format("%s:%d", r.name, riverPerRegion[i].size)
         }.joinToString(" ")
         FLog.i("TileMatcher",
-            "YOLO分类: 底部${bottomTiles.size}(手${handTiles.size}+副${meldTiles.size}) 河底${riverTiles.size} | $riverBreakdown")
+            "YOLO: 底部${bottomTiles.size}张 河底${riverPerRegion.sumOf { it.size }}张 | $riverBreakdown")
         return results
     }
 
-    /**
-     * 底部检测框按 x 排序后, 找最大间隙自动拆分手牌/副露。
-     * 手牌13-14张紧密排列(间距~111px), 副露在右侧有明显间隙。
-     * 条件: 最大间隙 > 中位数间距×1.5 且 > 100px → 在该处拆分。
-     */
-    private fun splitBottomByXGap(
-        bottomTiles: List<YoloDetector.Detection>
-    ): Pair<List<YoloDetector.Detection>, List<YoloDetector.Detection>> {
-        if (bottomTiles.size < 2) return Pair(bottomTiles, emptyList())
-
-        val gaps = bottomTiles.zipWithNext { a, b -> b.x1 - a.x2 }
-        if (gaps.isEmpty()) return Pair(bottomTiles, emptyList())
-
-        val maxGap = gaps.maxOrNull() ?: 0
-        val sortedGaps = gaps.sorted()
-        val medianGap = if (sortedGaps.size % 2 == 0)
-            (sortedGaps[sortedGaps.size / 2] + sortedGaps[sortedGaps.size / 2 - 1]) / 2
-        else
-            sortedGaps[sortedGaps.size / 2]
-
-        if (maxGap > medianGap * 1.5 && maxGap > 100) {
-            val splitIdx = gaps.indexOf(maxGap) + 1
-            return Pair(bottomTiles.take(splitIdx), bottomTiles.drop(splitIdx))
-        }
-        return Pair(bottomTiles, emptyList())
+    private fun fromCounts(tileIds: List<Int>): IntArray {
+        val counts = IntArray(34)
+        for (id in tileIds) counts[id] = minOf(counts[id] + 1, 4)
+        return counts
     }
+
+    // ═══════════════════════════════════════════
+    // 原 splitBottomByXGap 已废弃, 保留备用
+    // ═══════════════════════════════════════════
 
     // ═══════════════════════════════════════════
     // 精准定位识别 (v5.0 新增)
@@ -1119,104 +1118,44 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
      * 扫描四方牌河, 输出合并 RiverState (用于铳率计算)
      * 优先用 YOLO 缓存+四方精确坐标分类, 降级用 OpenCV 模板匹配(仅自家)
      */
-    fun scanAllRivers(screenshot: Bitmap?): DefenseAnalyzer.RiverState {
-        val visibleCounts = IntArray(34)
-        val allDiscards = mutableListOf<Int>()
+    fun scanAllRivers(screenshot: Bitmap?): FourRiverState {
+        // 优先复用 classify 阶段已构建的四家河底
+        lastFourRiver?.let { return it }
 
-        // 优先复用 YOLO 缓存: 用四方精确坐标分类河底牌
-        if (lastYoloDetections.isNotEmpty()) {
-            val perRegion = Array(riverRegions.size) { mutableListOf<Int>() }
-            var totalRiver = 0
-            for (d in lastYoloDetections) {
-                if (d.tileId !in 0..33) continue
-                for ((idx, region) in riverRegions.withIndex()) {
-                    if (region.contains(d)) {
-                        visibleCounts[d.tileId] = minOf(visibleCounts[d.tileId] + 1, 4)
-                        allDiscards.add(d.tileId)
-                        perRegion[idx].add(d.tileId)
-                        totalRiver++
-                        break
-                    }
-                }
-            }
-            val breakdown = riverRegions.mapIndexed { i, r ->
-                String.format("%s: %d张", r.name, perRegion[i].size)
-            }.joinToString(" | ")
-            FLog.i("TileMatcher", String.format("河底(YOLO): %d tiles | %s", totalRiver, breakdown))
-            return DefenseAnalyzer.RiverState(visibleCounts, allDiscards)
-        }
-
-        // 降级: OpenCV 模板匹配 (仅自家, 保留原有逻辑)
-        if (screenshot == null) return DefenseAnalyzer.RiverState(visibleCounts, allDiscards)
-
-        val imgW = screenshot.width; val imgH = screenshot.height
-        val rx = (1166 * imgW / 2800.0).toInt()
-        val ry = (621 * imgH / 1264.0).toInt()
-        val rw = ((1621 - 1166) * imgW / 2800.0).toInt()
-        val rh = ((923 - 621) * imgH / 1264.0).toInt()
-
-        val srcMat = Mat()
-        Utils.bitmapToMat(screenshot, srcMat)
-        val gray = Mat()
-        Imgproc.cvtColor(srcMat, gray, Imgproc.COLOR_RGBA2GRAY)
-        srcMat.release()
-
-        if (rw < 50 || rh < 20) { gray.release(); return DefenseAnalyzer.RiverState(visibleCounts, allDiscards) }
-
-        val roiRaw = Mat(gray, Rect(rx, ry, rw, rh))
-        val clahe = Imgproc.createCLAHE(3.0, Size(8.0, 8.0))
-        val roi = Mat()
-        clahe.apply(roiRaw, roi)
-        roiRaw.release()
-
-        FLog.i("TileMatcher", "河底ROI(自家): x=$rx y=$ry w=$rw h=$rh")
-
-        data class RiverHit(val tileId: Int, val x: Int, val y: Int, val score: Double)
-        val allHits = mutableListOf<RiverHit>()
-
-        for ((tileId, meldPair) in meldTemplates) {
-            val t = meldPair.second ?: meldPair.first ?: continue
-            val tH = t.rows(); val tW = t.cols()
-            val eq = Mat(); clahe.apply(t, eq)
-            for (s in doubleArrayOf(0.85, 0.92, 1.0)) {
-                val sw = (tW * s).toInt(); val sh = (tH * s).toInt()
-                if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
-                val rsz = Mat(); Imgproc.resize(eq, rsz, Size(sw.toDouble(), sh.toDouble()))
-                val res = Mat(); Imgproc.matchTemplate(roi, rsz, res, Imgproc.TM_CCOEFF_NORMED)
-                val mm = Core.minMaxLoc(res)
-                if (mm.maxVal >= 0.65) {
-                    allHits.add(RiverHit(tileId, rx + mm.maxLoc.x.toInt(), ry + mm.maxLoc.y.toInt(), mm.maxVal))
-                }
-                res.release(); rsz.release()
-            }
-            eq.release()
-        }
-
-        roi.release(); gray.release()
-
-        // NMS去重
-        allHits.sortBy { it.x }
-        val filtered = mutableListOf<RiverHit>()
-        for (h in allHits) {
-            if (filtered.none { it.tileId == h.tileId && kotlin.math.abs(it.x - h.x) < 30 }) {
-                filtered.add(h)
+        // 降级: 直接计算
+        val perRegion = Array(riverRegions.size) { mutableListOf<Int>() }
+        for (d in lastYoloDetections) {
+            if (d.tileId !in 0..33) continue
+            for ((idx, region) in riverRegions.withIndex()) {
+                if (region.contains(d)) { perRegion[idx].add(d.tileId); break }
             }
         }
-
-        for (h in filtered) {
-            if (h.score >= 0.60) {
-                visibleCounts[h.tileId] = minOf(visibleCounts[h.tileId] + 1, 4)
-                allDiscards.add(h.tileId)
-            }
-        }
-
-        FLog.i("TileMatcher", "河底(OpenCV): ${allHits.size} raw → ${filtered.size} dedup → ${allDiscards.size} tiles")
-        return DefenseAnalyzer.RiverState(visibleCounts, allDiscards)
+        return FourRiverState(
+            own = DefenseAnalyzer.RiverState(fromCounts(perRegion[0]), perRegion[0].toList()),
+            opposite = DefenseAnalyzer.RiverState(fromCounts(perRegion[1]), perRegion[1].toList()),
+            left = DefenseAnalyzer.RiverState(fromCounts(perRegion[2]), perRegion[2].toList()),
+            right = DefenseAnalyzer.RiverState(fromCounts(perRegion[3]), perRegion[3].toList())
+        )
     }
 
-    /** @deprecated 请用 scanAllRivers() */
-    @Deprecated("Use scanAllRivers()", ReplaceWith("scanAllRivers(screenshot)"))
-    fun scanOwnRiver(screenshot: Bitmap?): DefenseAnalyzer.RiverState = scanAllRivers(screenshot)
+    /** 合并四家河底为一个 RiverState (兼容旧调用, 用于总览) */
+    fun combinedRiver(): DefenseAnalyzer.RiverState {
+        val four = lastFourRiver ?: return DefenseAnalyzer.RiverState(IntArray(34), emptyList())
+        val totalCounts = IntArray(34)
+        val allDiscards = mutableListOf<Int>()
+        for ((counts, discards) in listOf(four.own to four.own.opponentDiscards,
+            four.opposite to four.opposite.opponentDiscards,
+            four.left to four.left.opponentDiscards,
+            four.right to four.right.opponentDiscards)) {
+            for (i in 0..33) totalCounts[i] = minOf(totalCounts[i] + counts.visibleCounts[i], 4)
+            allDiscards.addAll(discards)
+        }
+        return DefenseAnalyzer.RiverState(totalCounts, allDiscards)
+    }
+
+    /** @deprecated 请用 combinedRiver() */
+    @Deprecated("Use combinedRiver()", ReplaceWith("combinedRiver()"))
+    fun scanOwnRiver(screenshot: Bitmap?): DefenseAnalyzer.RiverState = combinedRiver()
 
     // ─── 清理 ───
     fun release() {
