@@ -101,8 +101,9 @@ object YoloDetector {
         }
         // 对比度拉伸
         val stretched = stretchContrast(gray)
-        // 缩放填充到 640×640
-        return scaleAndPad(stretched, INPUT_SIZE, Color.BLACK)
+        // 直接缩放到640×640 (model训练时用的, 不用letterbox)
+        val scaled = Bitmap.createScaledBitmap(stretched, INPUT_SIZE, INPUT_SIZE, true)
+        return scaled to PaddingInfo(INPUT_SIZE.toFloat() / bitmap.width, INPUT_SIZE.toFloat() / bitmap.height, 0, 0)
     }
 
     private fun stretchContrast(bitmap: Bitmap): Bitmap {
@@ -142,7 +143,7 @@ object YoloDetector {
             }
             drawBitmap(bitmap, m, Paint(Paint.ANTI_ALIAS_FLAG))
         }
-        return out to PaddingInfo(scale, padX, padY, bitmap.height, bitmap.width)
+        return out to PaddingInfo(scale, scale, padX, padY)
     }
 
     // ─── 推理输入 ───
@@ -164,7 +165,7 @@ object YoloDetector {
 
     // ─── 后处理 ───
 
-    data class PaddingInfo(val scale: Float, val padX: Int, val padY: Int, val origH: Int, val origW: Int)
+    data class PaddingInfo(val scaleX: Float, val scaleY: Float, val padX: Int, val padY: Int)
 
     private fun postprocess(output: Array<FloatArray>, padding: PaddingInfo): List<Detection> {
         val detections = mutableListOf<Detection>()
@@ -181,10 +182,10 @@ object YoloDetector {
             }
             if (maxConf < CONF_THRESHOLD) continue
 
-            val x1 = ((xc - bw / 2 - padding.padX) / padding.scale).toInt()
-            val y1 = ((yc - bh / 2 - padding.padY) / padding.scale).toInt()
-            val x2 = ((xc + bw / 2 - padding.padX) / padding.scale).toInt()
-            val y2 = ((yc + bh / 2 - padding.padY) / padding.scale).toInt()
+            val x1 = ((xc - bw / 2 - padding.padX) / padding.scaleX).toInt()
+            val y1 = ((yc - bh / 2 - padding.padY) / padding.scaleY).toInt()
+            val x2 = ((xc + bw / 2 - padding.padX) / padding.scaleX).toInt()
+            val y2 = ((yc + bh / 2 - padding.padY) / padding.scaleY).toInt()
 
             detections.add(Detection(
                 x1 = x1, y1 = y1, x2 = x2, y2 = y2,
