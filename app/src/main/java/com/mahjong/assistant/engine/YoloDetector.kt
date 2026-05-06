@@ -79,11 +79,11 @@ object YoloDetector {
             return emptyList()
         }
         val (preprocessed, padding) = preprocess(bitmap)
-        val input = bitmapToNchw(preprocessed)
+        val inputBuffer = bitmapToFloatBuffer(preprocessed)
         val output = arrayOf(
             Array(4 + CLASS_NAMES.size) { FloatArray(8400) }
         )
-        interpreter!!.run(arrayOf(input), output)
+        interpreter!!.run(inputBuffer, output)
         return postprocess(output[0], padding)
     }
 
@@ -147,21 +147,19 @@ object YoloDetector {
 
     // ─── 推理输入 ───
 
-    private fun bitmapToNchw(bitmap: Bitmap): Array<Array<Array<FloatArray>>> {
-        val w = bitmap.width; val h = bitmap.height
-        val pixels = IntArray(w * h)
-        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-        val nchw = Array(1) { // batch=1
-            Array(3) { c -> // RGB
-                Array(h) { y ->
-                    FloatArray(w) { x ->
-                        val p = pixels[y * w + x]
-                        ((p shr ((2 - c) * 8)) and 0xFF) / 255.0f
-                    }
-                }
-            }
+    /** 将640×640预处理后的Bitmap转为ByteBuffer (NHWC: 1×640×640×3) */
+    private fun bitmapToFloatBuffer(bitmap: Bitmap): ByteBuffer {
+        val size = 4 * 1 * INPUT_SIZE * INPUT_SIZE * 3
+        val buffer = ByteBuffer.allocateDirect(size).apply { order(ByteOrder.nativeOrder()) }
+        val pixels = IntArray(INPUT_SIZE * INPUT_SIZE)
+        bitmap.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
+        for (p in pixels) {
+            buffer.putFloat(((p shr 16) and 0xFF) / 255.0f)  // R
+            buffer.putFloat(((p shr 8) and 0xFF) / 255.0f)   // G
+            buffer.putFloat((p and 0xFF) / 255.0f)            // B
         }
-        return nchw
+        buffer.rewind()
+        return buffer
     }
 
     // ─── 后处理 ───
