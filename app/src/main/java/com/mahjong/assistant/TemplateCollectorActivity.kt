@@ -335,6 +335,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
     }
 
     // ═══════ 原 doSlice (降级用) ═══════
+    private fun doSlice() {
         val img = currentBitmap ?: return; slices.clear(); scrollContent.removeAllViews()
         meldMarkerView.visibility = View.GONE
         contentArea.getChildAt(1)?.visibility = View.GONE  // ScrollView
