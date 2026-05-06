@@ -3,7 +3,9 @@ package com.mahjong.assistant.capture
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import com.mahjong.assistant.engine.DefenseAnalyzer
 import com.mahjong.assistant.engine.Tiles
+import com.mahjong.assistant.engine.YoloDetector
 import com.mahjong.assistant.util.FLog
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
@@ -87,6 +89,9 @@ object TileMatcher {
     @Volatile var lastHandY: Int = 1106  // 上次检测到手牌y(自适应)
     @Volatile var lastHandH: Int = 143   // 上次检测到手牌h
 
+    // YOLO 检测缓存 (用于河底扫描复用)
+    @Volatile private var lastYoloDetections: List<YoloDetector.Detection> = emptyList()
+
     // ─── tileId映射 (兼容简繁体文件名) ───
     private val nameToId = mapOf(
         "一万" to 0,  "二万" to 1,  "三万" to 2,  "四万" to 3,  "五万" to 4,
@@ -111,6 +116,15 @@ object TileMatcher {
     fun init(context: Context): Boolean {
         FLog.i("TileMatcher", "init start")
         return try {
+            // YOLO 模型优先
+            try {
+                val modelBytes = context.assets.open("best_float16.tflite").use { it.readBytes() }
+                YoloDetector.loadModel(modelBytes)
+                FLog.i("TileMatcher", "YOLO model loaded")
+            } catch (e: Exception) {
+                FLog.e("TileMatcher", "YOLO load failed, fallback templates", e)
+            }
+
             opencvReady = try {
                 OpenCVLoader.initLocal().also {
                     android.util.Log.i(TAG, "OpenCV initLocal: $it")
@@ -132,9 +146,9 @@ object TileMatcher {
             val meldCount = loadMeldTemplates(context)
 
             initDiagnostic = if (templatesLoaded) {
-                "就绪: ${templates.size}/34 模板 + ${meldCount}副露 OpenCV=${opencvReady}"
+                "就绪: YOLO+${templates.size}/34模板 + ${meldCount}副露"
             } else {
-                "模板为空"
+                "就绪: YOLO"
             }
             FLog.i("TileMatcher", initDiagnostic)
             android.util.Log.i(TAG, initDiagnostic)
@@ -339,6 +353,29 @@ object TileMatcher {
     private fun recognizeImpl(screenshot: Bitmap): Pair<List<MatchResult>, Double> {
         FLog.i("TileMatcher", "recognizeImpl start ${screenshot.width}x${screenshot.height}")
 
+        // ─── YOLO 检测 (主方案) ───
+        try {
+            val detections = YoloDetector.detect(screenshot)
+            if (detections.isNotEmpty()) {
+                // 按 y 坐标分区: y>1050 手牌, 其余副露/河底 (后续用四方坐标精分)
+                val handTiles = detections.filter { it.y1 > 1050 || it.y2 > 1050 }
+                    .sortedBy { it.x1 }
+                    .map { MatchResult(it.tileId, it.confidence.toDouble(), false) }
+                val meldTiles = detections.filter { it.y1 <= 1050 }
+                    .sortedBy { it.x1 }
+                    .map { MatchResult(it.tileId, it.confidence.toDouble(), false) }
+                val results = handTiles + meldTiles
+                lastYoloDetections = detections  // 缓存供河底扫描复用
+                val tileIds = results.map { it.tileId }.toIntArray()
+                FLog.i("TileMatcher", "YOLO: ${detections.size} detections → 手牌${handTiles.size} + 副露${meldTiles.size} = ${results.size}")
+                android.util.Log.i(TAG, "YOLO手牌: ${Tiles.toDisplayString(tileIds.copyOfRange(0, minOf(14, tileIds.size)))}")
+                return Pair(results, if (results.isNotEmpty()) 0.95 else -1.0)
+            }
+        } catch (e: Exception) {
+            FLog.e("TileMatcher", "YOLO detect failed, fallback to templates", e)
+        }
+
+        // ─── 模板匹配 (降级方案) ───
         if (!templatesLoaded) {
             lastLog = "模板未加载"
             return Pair(emptyList(), -1.0)
@@ -974,6 +1011,102 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
             bitmap.compress(Bitmap.CompressFormat.PNG, 90, out)
         }
         return file.absolutePath
+    }
+
+    // ─── 河底扫描 ───
+
+    /**
+     * 扫描自家河底区域, 输出 RiverState (用于铳率计算)
+     * 雀魂自家河底: 画面右下, y≈900~1100, 牌横放重叠
+     */
+    fun scanOwnRiver(screenshot: Bitmap?): DefenseAnalyzer.RiverState {
+        val visibleCounts = IntArray(34)
+        val allDiscards = mutableListOf<Int>()
+
+        // 优先复用 YOLO 缓存: y<1050 且非副露的检测框
+        if (lastYoloDetections.isNotEmpty()) {
+            val riverTiles = lastYoloDetections.filter { it.y1 <= 1050 && it.y2 <= 1050 }
+            for (d in riverTiles) {
+                if (d.tileId in 0..33) {
+                    visibleCounts[d.tileId] = minOf(visibleCounts[d.tileId] + 1, 4)
+                    allDiscards.add(d.tileId)
+                }
+            }
+            FLog.i("TileMatcher", "河底(YOLO): ${riverTiles.size} tiles")
+            return DefenseAnalyzer.RiverState(visibleCounts, allDiscards)
+        }
+
+        // 降级: OpenCV 模板匹配 (原有逻辑)
+        if (screenshot == null) return DefenseAnalyzer.RiverState(visibleCounts, allDiscards)
+
+        val imgW = screenshot.width; val imgH = screenshot.height
+        // 河底ROI: 基于画面比例(2800×1264 基准)
+        val scaleX = imgW / 2800.0; val scaleY = imgH / 1264.0
+        val rx = (800 * scaleX).toInt()
+        val ry = (900 * scaleY).toInt()
+        val rw = minOf(imgW - rx, (1400 * scaleX).toInt())
+        val rh = minOf(imgH - ry, (200 * scaleY).toInt())
+
+        val srcMat = Mat()
+        Utils.bitmapToMat(screenshot, srcMat)
+        val gray = Mat()
+        Imgproc.cvtColor(srcMat, gray, Imgproc.COLOR_RGBA2GRAY)
+        srcMat.release()
+
+        if (rw < 50 || rh < 20) { gray.release(); return DefenseAnalyzer.RiverState(visibleCounts, allDiscards) }
+
+        val roiRaw = Mat(gray, Rect(rx, ry, rw, rh))
+        val clahe = Imgproc.createCLAHE(3.0, Size(8.0, 8.0))
+        val roi = Mat()
+        clahe.apply(roiRaw, roi)
+        roiRaw.release()
+
+        FLog.i("TileMatcher", "河底ROI: x=$rx y=$ry w=$rw h=$rh")
+
+        data class RiverHit(val tileId: Int, val x: Int, val y: Int, val score: Double)
+        val allHits = mutableListOf<RiverHit>()
+
+        // 用 meld 横放模板 + 手牌模板匹配
+        for ((tileId, meldPair) in meldTemplates) {
+            // 横放模板优先 (河底牌横放)
+            val t = meldPair.second ?: meldPair.first ?: continue
+            val tH = t.rows(); val tW = t.cols()
+            val eq = Mat(); clahe.apply(t, eq)
+            for (s in doubleArrayOf(0.85, 0.92, 1.0)) {
+                val sw = (tW * s).toInt(); val sh = (tH * s).toInt()
+                if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
+                val rsz = Mat(); Imgproc.resize(eq, rsz, Size(sw.toDouble(), sh.toDouble()))
+                val res = Mat(); Imgproc.matchTemplate(roi, rsz, res, Imgproc.TM_CCOEFF_NORMED)
+                val mm = Core.minMaxLoc(res)
+                if (mm.maxVal >= 0.65) {
+                    allHits.add(RiverHit(tileId, rx + mm.maxLoc.x.toInt(), ry + mm.maxLoc.y.toInt(), mm.maxVal))
+                }
+                res.release(); rsz.release()
+            }
+            eq.release()
+        }
+
+        roi.release(); gray.release()
+
+        // NMS去重: 按x排序, 间距<30px且同tileId的去重取最高分
+        allHits.sortBy { it.x }
+        val filtered = mutableListOf<RiverHit>()
+        for (h in allHits) {
+            if (filtered.none { it.tileId == h.tileId && kotlin.math.abs(it.x - h.x) < 30 }) {
+                filtered.add(h)
+            }
+        }
+
+        // 统计
+        for (h in filtered) {
+            if (h.score >= 0.60) {
+                visibleCounts[h.tileId] = minOf(visibleCounts[h.tileId] + 1, 4)
+                allDiscards.add(h.tileId)
+            }
+        }
+
+        FLog.i("TileMatcher", "河底: ${allHits.size} raw → ${filtered.size} dedup → ${allDiscards.size} tiles")
+        return DefenseAnalyzer.RiverState(visibleCounts, allDiscards)
     }
 
     // ─── 清理 ───

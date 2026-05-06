@@ -37,7 +37,8 @@ object TenhouClient {
     /** 天凤推荐结果 */
     data class Advice(
         val bestDiscard: Int,          // 推荐切的牌ID
-        val bestDiscardName: String,   // 牌名
+        val bestDiscardName: String,   // 牌名(天凤格式: 1m)
+        val bestDiscardChinese: String, // 中文牌名
         val shanten: Int,              // 向听数
         val ukeire: Int                // 有效进张数
     )
@@ -229,11 +230,28 @@ object TenhouClient {
             if (tileId < 0) return null
 
             FLog.i("Tenhou", "result: 切$bestDiscardName shanten=$shanten ukeire=$bestUkeire")
-            return Advice(tileId, bestDiscardName, shanten, bestUkeire)
+            return Advice(tileId, bestDiscardName, tenhouToChinese(bestDiscardName), shanten, bestUkeire)
 
         } catch (e: Exception) {
             FLog.e("Tenhou", "parse exception", e)
             return null
+        }
+    }
+
+    /** 天凤牌名 → 中文 */
+    fun tenhouToChinese(name: String): String {
+        val re = Regex("(\\d+)([mpsz])")
+        val m = re.find(name) ?: return name
+        val num = m.groupValues[1].toIntOrNull() ?: return name
+        val suit = m.groupValues[2]
+        val ziNames = arrayOf("東","南","西","北","白","発","中")
+        val wanNum = arrayOf("一","二","三","四","五","六","七","八","九")
+        return when (suit) {
+            "m" -> "${wanNum[num-1]}万"
+            "p" -> "${wanNum[num-1]}筒"
+            "s" -> "${wanNum[num-1]}索"
+            "z" -> ziNames.getOrElse(num-1) { name }
+            else -> name
         }
     }
 

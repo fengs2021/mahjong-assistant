@@ -97,14 +97,41 @@ object DefenseAnalyzer {
                 if (seen >= 4) reasons.add("絶対安全(0枚)")
             }
 
-            // 3. 筋牌检测
+            // 3. 现物检测 (对手刚切的牌 = 绝对安全)
+            if (river != null && river.opponentDiscards.contains(tileId)) {
+                danger = 0.01f  // 极微风险, 仅剩抢杠/双碰极小概率
+                reasons.add("现物")
+            }
+
+            // 4. 早外检测 (序盘对手切过同花色 → 较安全)
+            if (danger > 0.01f && river != null && tileId < 27) {
+                val suit = tileId / 9
+                val earlyDiscards = river.opponentDiscards.take(6)
+                val hasEarlySameSuit = earlyDiscards.any { it / 9 == suit && it != tileId }
+                if (hasEarlySameSuit) {
+                    danger *= 0.2f
+                    reasons.add("早外")
+                }
+            }
+
+            // 5. 筋牌检测
             val sujiSafe = isSujiSafe(tileId, hand, river?.opponentDiscards ?: emptyList())
-            if (sujiSafe != null) {
+            if (sujiSafe != null && danger > 0.01f) {
                 danger *= 0.15f  // 筋牌极为安全
                 reasons.add("筋牌(${Tiles.name(sujiSafe)})")
             }
 
-            // 4. 壁牌检测
+            // 6. 无筋生牌 (有河底时, 无筋+未见+非字牌 = 危险)
+            if (river != null && tileId < 27 && !reasons.any { it.contains("筋牌") || it.contains("现物") }) {
+                val isSuji = isSujiSafe(tileId, hand, river.opponentDiscards) != null
+                val isSeen = river.visibleCounts[tileId] > 0
+                if (!isSuji && !isSeen) {
+                    danger *= 1.5f
+                    reasons.add("无筋生牌")
+                }
+            }
+
+            // 7. 壁牌检测
             val wallFactor = wallFactor(tileId, river?.visibleCounts)
             if (wallFactor != null && wallFactor < 1.0f) {
                 danger *= wallFactor

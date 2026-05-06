@@ -3,6 +3,7 @@ package com.mahjong.assistant.overlay
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
@@ -383,7 +384,7 @@ class OverlayService : Service() {
 
     // ─── 更新建议 ───
 
-    fun updateAdvice(hand: IntArray) {
+    fun updateAdvice(hand: IntArray, riverState: DefenseAnalyzer.RiverState? = null) {
         if (hand.size == 13) {
             currentHand = hand
             updateAdviceShantenOnly(hand)
@@ -396,7 +397,7 @@ class OverlayService : Service() {
         currentHand = hand
         val result = Shanten.calculate(hand)
         val advice = Efficiency.analyze(hand)
-        val safety = DefenseAnalyzer.analyzeBasic(hand)  // 基础模式: 无河底
+        val safety = DefenseAnalyzer.analyze(hand, riverState)
 
         // 向听数
         shantenLabel.text = when (result.shanten) {
@@ -441,7 +442,7 @@ class OverlayService : Service() {
                                 0 -> "听牌! [天凤]"
                                 else -> "向听: ${th.shanten} [天凤]"
                             }
-                            recommendLabel.text = "切 ${th.bestDiscardName}  (进张${th.ukeire}枚) [天凤]"
+                            recommendLabel.text = "切 ${th.bestDiscardChinese}  (进张${th.ukeire}枚) [天凤]"
                         }
                     }
                 } catch (e: Exception) {
@@ -733,8 +734,22 @@ class OverlayService : Service() {
                     Tiles.toCompactString(tileIds) else "未识别"
 
                 if (tileIds.size >= 14) {
-                    dangerLabel.visibility = View.GONE  // 正常手牌, 隐藏放铳警告
+                    dangerLabel.visibility = View.GONE
                     updateAdvice(tileIds)
+                    // 异步扫河底, 完成后更新铳率分析
+                    val ssFile = lastScreenshotPath?.let { File(it) }?.takeIf { it.exists() }
+                    if (ssFile != null) {
+                        Thread {
+                            try {
+                                val bmp = BitmapFactory.decodeFile(ssFile.absolutePath)
+                                if (bmp != null) {
+                                    val river = TileMatcher.scanOwnRiver(bmp)
+                                    mainHandler.post { updateAdvice(tileIds, river) }
+                                    bmp.recycle()
+                                }
+                            } catch (e: Exception) { FLog.e("OverlaySvc", "河底扫描失败", e) }
+                        }.start()
+                    }
                 } else if (tileIds.size == 13) {
                     updateAdviceShantenOnly(tileIds)
                 }
