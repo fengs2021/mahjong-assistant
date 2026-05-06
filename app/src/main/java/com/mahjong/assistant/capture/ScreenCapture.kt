@@ -465,8 +465,6 @@ object TileMatcher {
         val validated = results.toMutableList()
         var corrected = 0
         for ((idx, r) in results.withIndex()) {
-            if (r.confidence >= 0.4) continue  // YOLO高置信度不覆盖
-
             val d = bottomDets.getOrNull(idx) ?: continue
 
             // 裁剪牌面+模板匹配
