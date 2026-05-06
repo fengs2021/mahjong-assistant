@@ -1140,9 +1140,9 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
                 }
             }
             val breakdown = riverRegions.mapIndexed { i, r ->
-                "${r.name}: ${perRegion[i].size}张 ${perRegion[i].take(4).joinToString(\" \") { Tiles.name(it) }}"
+                String.format("%s: %d张", r.name, perRegion[i].size)
             }.joinToString(" | ")
-            FLog.i("TileMatcher", "河底(YOLO): $totalRiver tiles | $breakdown")
+            FLog.i("TileMatcher", String.format("河底(YOLO): %d tiles | %s", totalRiver, breakdown))
             return DefenseAnalyzer.RiverState(visibleCounts, allDiscards)
         }
 
