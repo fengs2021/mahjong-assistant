@@ -353,22 +353,23 @@ object TileMatcher {
     private fun recognizeImpl(screenshot: Bitmap): Pair<List<MatchResult>, Double> {
         FLog.i("TileMatcher", "recognizeImpl start ${screenshot.width}x${screenshot.height}")
 
-        // ─── YOLO 检测 (主方案) ───
+        // ─── YOLO 检测 (主方案: 全图端到端) ───
         try {
             val detections = YoloDetector.detect(screenshot)
             if (detections.isNotEmpty()) {
-                // 按 y 坐标分区: y>1050 手牌, 其余副露/河底 (后续用四方坐标精分)
-                val handTiles = detections.filter { it.y1 > 1050 || it.y2 > 1050 }
-                    .sortedBy { it.x1 }
-                    .map { MatchResult(it.tileId, it.confidence.toDouble(), false) }
-                val meldTiles = detections.filter { it.y1 <= 1050 }
-                    .sortedBy { it.x1 }
-                    .map { MatchResult(it.tileId, it.confidence.toDouble(), false) }
-                val results = handTiles + meldTiles
-                lastYoloDetections = detections  // 缓存供河底扫描复用
+                val results = categorizeYoloDetections(detections, screenshot.height)
+                lastYoloDetections = detections
+                if (results.isNotEmpty()) {
+                    // 从手牌检测推导 lastHandY/lastHandH (给模板匹配降级用)
+                    val handOnly = detections.filter { it.y1 > screenshot.height * 0.7 }.sortedBy { it.x1 }
+                    if (handOnly.isNotEmpty()) {
+                        lastHandY = handOnly.map { it.y1 }.minOrNull() ?: 1106
+                        lastHandH = handOnly.map { it.y2 - it.y1 }.maxOrNull() ?: 143
+                    }
+                }
                 val tileIds = results.map { it.tileId }.toIntArray()
-                FLog.i("TileMatcher", "YOLO: ${detections.size} detections → 手牌${handTiles.size} + 副露${meldTiles.size} = ${results.size}")
-                android.util.Log.i(TAG, "YOLO手牌: ${Tiles.toDisplayString(tileIds.copyOfRange(0, minOf(14, tileIds.size)))}")
+                FLog.i("TileMatcher", "YOLO: ${detections.size} detections → ${results.size} 结果")
+                android.util.Log.i(TAG, "YOLO: ${Tiles.toDisplayString(tileIds.copyOfRange(0, minOf(14, tileIds.size)))}")
                 return Pair(results, if (results.isNotEmpty()) 0.95 else -1.0)
             }
         } catch (e: Exception) {
@@ -420,6 +421,75 @@ object TileMatcher {
         lastLog = logParts.joinToString("\n")
         FLog.i("TileMatcher", "recognizeImpl done: ${results.size} results, reliable=$reliableCount")
         return Pair(results, overallConfidence)
+    }
+
+    // ═══════════════════════════════════════════
+    // YOLO 检测结果分类: 手牌(底部左) + 副露(底部右) + 河底(中部)
+    // ═══════════════════════════════════════════
+
+    /**
+     * 将 YOLO 全图检测结果按空间位置分类:
+     *   - 底部 (y > imgH*0.75): 按 x 间隙自动拆分 → 手牌(左密集区) + 副露(右稀疏区)
+     *   - 中部 (y ≤ imgH*0.75): 河底牌
+     */
+    private fun categorizeYoloDetections(
+        detections: List<YoloDetector.Detection>,
+        imgHeight: Int
+    ): List<MatchResult> {
+        // 1. 按 y 分为底部(手牌+副露)和中部(河底)
+        val bottomThreshold = (imgHeight * 0.75).toInt()
+        val bottomTiles = detections
+            .filter { it.y1 > bottomThreshold || it.y2 > bottomThreshold }
+            .sortedBy { it.x1 }
+        val riverTiles = detections
+            .filter { it.y1 <= bottomThreshold && it.y2 <= bottomThreshold }
+
+        // 2. 底部区域: 找最大 x 间隙自动拆分手牌/副露
+        val (handTiles, meldTiles) = splitBottomByXGap(bottomTiles)
+
+        // 3. 组装结果: 手牌在前, 副露在后
+        val results = mutableListOf<MatchResult>()
+        for (d in handTiles) {
+            if (d.tileId in 0..33) {
+                results.add(MatchResult(d.tileId, d.confidence.toDouble(), false))
+            }
+        }
+        for (d in meldTiles) {
+            if (d.tileId in 0..33) {
+                results.add(MatchResult(d.tileId, d.confidence.toDouble(), false))
+            }
+        }
+
+        FLog.i("TileMatcher",
+            "YOLO分类: 底部${bottomTiles.size}(手${handTiles.size}+副${meldTiles.size}) 河底${riverTiles.size}")
+        return results
+    }
+
+    /**
+     * 底部检测框按 x 排序后, 找最大间隙自动拆分手牌/副露。
+     * 手牌13-14张紧密排列(间距~111px), 副露在右侧有明显间隙。
+     * 条件: 最大间隙 > 中位数间距×1.5 且 > 100px → 在该处拆分。
+     */
+    private fun splitBottomByXGap(
+        bottomTiles: List<YoloDetector.Detection>
+    ): Pair<List<YoloDetector.Detection>, List<YoloDetector.Detection>> {
+        if (bottomTiles.size < 2) return Pair(bottomTiles, emptyList())
+
+        val gaps = bottomTiles.zipWithNext { a, b -> b.x1 - a.x2 }
+        if (gaps.isEmpty()) return Pair(bottomTiles, emptyList())
+
+        val maxGap = gaps.maxOrNull() ?: 0
+        val sortedGaps = gaps.sorted()
+        val medianGap = if (sortedGaps.size % 2 == 0)
+            (sortedGaps[sortedGaps.size / 2] + sortedGaps[sortedGaps.size / 2 - 1]) / 2
+        else
+            sortedGaps[sortedGaps.size / 2]
+
+        if (maxGap > medianGap * 1.5 && maxGap > 100) {
+            val splitIdx = gaps.indexOf(maxGap) + 1
+            return Pair(bottomTiles.take(splitIdx), bottomTiles.drop(splitIdx))
+        }
+        return Pair(bottomTiles, emptyList())
     }
 
     // ═══════════════════════════════════════════
@@ -1023,9 +1093,13 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
         val visibleCounts = IntArray(34)
         val allDiscards = mutableListOf<Int>()
 
-        // 优先复用 YOLO 缓存: y<1050 且非副露的检测框
+        // 优先复用 YOLO 缓存: 按 y 坐标分离河底牌 (y ≤ imgH*0.75)
         if (lastYoloDetections.isNotEmpty()) {
-            val riverTiles = lastYoloDetections.filter { it.y1 <= 1050 && it.y2 <= 1050 }
+            val imgH = screenshot?.height ?: 1264
+            val bottomThreshold = (imgH * 0.75).toInt()
+            val riverTiles = lastYoloDetections.filter {
+                it.y1 <= bottomThreshold && it.y2 <= bottomThreshold
+            }
             for (d in riverTiles) {
                 if (d.tileId in 0..33) {
                     visibleCounts[d.tileId] = minOf(visibleCounts[d.tileId] + 1, 4)
