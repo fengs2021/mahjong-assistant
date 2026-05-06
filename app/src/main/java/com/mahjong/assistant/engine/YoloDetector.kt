@@ -166,8 +166,8 @@ object YoloDetector {
     private const val CONF_THRESHOLD = 0.25f  // 降低阈值, 模型输出偏低
     private const val IOU_THRESHOLD = 0.3f    // 河底NMS IoU阈值
     
-    // 手牌底部去重用坐标聚类 (不是NMS, 手牌紧密排列IoU高会被误杀)
-    private const val BOTTOM_CLUSTER_GAP = 150  // x间距<150px视为同一簇(同位置)
+    // 手牌底部去重用坐标聚类 (中心x间距<60px=同张牌的不同检测)
+    private const val BOTTOM_CLUSTER_GAP = 60  // 中心点x间距<60px同簇
 
     // ═══════ 后处理 ═══════
 
@@ -204,14 +204,14 @@ object YoloDetector {
         return regionFilter(detections, padding.imgHeight)
     }
 
-    /** 分区去重: 底部(y>70%imgH)坐标聚类, 河底标准NMS */
+    /** 分区去重: 底部(y>70%imgH)中心x聚类, 河底标准NMS */
     private fun regionFilter(detections: List<Detection>, imgHeight: Int): List<Detection> {
         val bottomThresh = (imgHeight * 0.7).toInt()
         val bottom = detections.filter { it.y1 > bottomThresh || it.y2 > bottomThresh }
         val upper = detections.filter { it.y1 <= bottomThresh && it.y2 <= bottomThresh }
 
-        // 底部: x坐标聚类 (同一簇保留最高分)
-        val bottomFiltered = clusterByX(bottom.sortedBy { it.x1 })
+        // 底部: 中心x聚类 (同张牌的不同检测框合并)
+        val bottomFiltered = clusterByCenterX(bottom.sortedBy { (it.x1 + it.x2) / 2 })
 
         // 河底: 标准NMS
         val upperFiltered = applyNMS(upper)
@@ -222,14 +222,16 @@ object YoloDetector {
         return result
     }
 
-    /** x坐标聚类: 间距<BOTTOM_CLUSTER_GAP的归为同簇, 每簇保留最高分 */
-    private fun clusterByX(sorted: List<Detection>): List<Detection> {
+    /** 中心x聚类: 同x位置(中心间距<BOTTOM_CLUSTER_GAP)保留最高分 */
+    private fun clusterByCenterX(sorted: List<Detection>): List<Detection> {
         if (sorted.size <= 1) return sorted
         val result = mutableListOf<Detection>()
         var clusterBest = sorted[0]
         for (i in 1 until sorted.size) {
             val cur = sorted[i]
-            if (cur.x1 - clusterBest.x2 < BOTTOM_CLUSTER_GAP) {
+            val cabin = (clusterBest.x1 + clusterBest.x2) / 2
+            val cacur = (cur.x1 + cur.x2) / 2
+            if (cacur - cabin < BOTTOM_CLUSTER_GAP) {
                 if (cur.confidence > clusterBest.confidence) clusterBest = cur
             } else {
                 result.add(clusterBest)
@@ -237,18 +239,6 @@ object YoloDetector {
             }
         }
         result.add(clusterBest)
-        // 二次过滤: 同tileId且x间距<30px只保留最高分
-        return dedupByTileX(result)
-    }
-
-    private fun dedupByTileX(detections: List<Detection>): List<Detection> {
-        val sorted = detections.sortedBy { it.tileId * 10000 + it.x1 }
-        val result = mutableListOf<Detection>()
-        for (d in sorted) {
-            if (result.none { it.tileId == d.tileId && kotlin.math.abs(it.x1 - d.x1) < 30 }) {
-                result.add(d)
-            }
-        }
         return result
     }
 
