@@ -424,6 +424,25 @@ object TileMatcher {
     }
 
     // ═══════════════════════════════════════════
+    // 四方牌河坐标 (PPG-AN00 横屏 2800×1264)
+    // ═══════════════════════════════════════════
+
+    data class RiverRegion(val name: String, val x1: Int, val y1: Int, val x2: Int, val y2: Int) {
+        fun contains(det: YoloDetector.Detection): Boolean {
+            val cx = (det.x1 + det.x2) / 2
+            val cy = (det.y1 + det.y2) / 2
+            return cx in x1..x2 && cy in y1..y2
+        }
+    }
+
+    private val riverRegions = listOf(
+        RiverRegion("自家(南)", 1166, 621, 1621, 923),
+        RiverRegion("对家(北)", 1218, 138, 1595, 380),
+        RiverRegion("上家(东)",  802, 297, 1190, 653),
+        RiverRegion("下家(西)", 1605, 302, 1991, 663)
+    )
+
+    // ═══════════════════════════════════════════
     // YOLO 检测结果分类: 手牌(底部左) + 副露(底部右) + 河底(中部)
     // ═══════════════════════════════════════════
 
@@ -444,6 +463,14 @@ object TileMatcher {
         val riverTiles = detections
             .filter { it.y1 <= bottomThreshold && it.y2 <= bottomThreshold }
 
+        // 河底按四方区域分类(仅用于日志)
+        val riverPerRegion = IntArray(riverRegions.size)
+        for (d in riverTiles) {
+            for ((idx, region) in riverRegions.withIndex()) {
+                if (region.contains(d)) { riverPerRegion[idx]++; break }
+            }
+        }
+
         // 2. 底部区域: 找最大 x 间隙自动拆分手牌/副露
         val (handTiles, meldTiles) = splitBottomByXGap(bottomTiles)
 
@@ -460,8 +487,11 @@ object TileMatcher {
             }
         }
 
+        val riverBreakdown = riverRegions.mapIndexed { i, r ->
+            "${r.name}:${riverPerRegion[i]}"
+        }.joinToString(" ")
         FLog.i("TileMatcher",
-            "YOLO分类: 底部${bottomTiles.size}(手${handTiles.size}+副${meldTiles.size}) 河底${riverTiles.size}")
+            "YOLO分类: 底部${bottomTiles.size}(手${handTiles.size}+副${meldTiles.size}) 河底${riverTiles.size} | $riverBreakdown")
         return results
     }
 
@@ -1086,40 +1116,44 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
     // ─── 河底扫描 ───
 
     /**
-     * 扫描自家河底区域, 输出 RiverState (用于铳率计算)
-     * 雀魂自家河底: 画面右下, y≈900~1100, 牌横放重叠
+     * 扫描四方牌河, 输出合并 RiverState (用于铳率计算)
+     * 优先用 YOLO 缓存+四方精确坐标分类, 降级用 OpenCV 模板匹配(仅自家)
      */
-    fun scanOwnRiver(screenshot: Bitmap?): DefenseAnalyzer.RiverState {
+    fun scanAllRivers(screenshot: Bitmap?): DefenseAnalyzer.RiverState {
         val visibleCounts = IntArray(34)
         val allDiscards = mutableListOf<Int>()
 
-        // 优先复用 YOLO 缓存: 按 y 坐标分离河底牌 (y ≤ imgH*0.75)
+        // 优先复用 YOLO 缓存: 用四方精确坐标分类河底牌
         if (lastYoloDetections.isNotEmpty()) {
-            val imgH = screenshot?.height ?: 1264
-            val bottomThreshold = (imgH * 0.75).toInt()
-            val riverTiles = lastYoloDetections.filter {
-                it.y1 <= bottomThreshold && it.y2 <= bottomThreshold
-            }
-            for (d in riverTiles) {
-                if (d.tileId in 0..33) {
-                    visibleCounts[d.tileId] = minOf(visibleCounts[d.tileId] + 1, 4)
-                    allDiscards.add(d.tileId)
+            val perRegion = Array(riverRegions.size) { mutableListOf<Int>() }
+            var totalRiver = 0
+            for (d in lastYoloDetections) {
+                if (d.tileId !in 0..33) continue
+                for ((idx, region) in riverRegions.withIndex()) {
+                    if (region.contains(d)) {
+                        visibleCounts[d.tileId] = minOf(visibleCounts[d.tileId] + 1, 4)
+                        allDiscards.add(d.tileId)
+                        perRegion[idx].add(d.tileId)
+                        totalRiver++
+                        break
+                    }
                 }
             }
-            FLog.i("TileMatcher", "河底(YOLO): ${riverTiles.size} tiles")
+            val breakdown = riverRegions.mapIndexed { i, r ->
+                "${r.name}: ${perRegion[i].size}张 ${perRegion[i].take(4).joinToString(\" \") { Tiles.name(it) }}"
+            }.joinToString(" | ")
+            FLog.i("TileMatcher", "河底(YOLO): $totalRiver tiles | $breakdown")
             return DefenseAnalyzer.RiverState(visibleCounts, allDiscards)
         }
 
-        // 降级: OpenCV 模板匹配 (原有逻辑)
+        // 降级: OpenCV 模板匹配 (仅自家, 保留原有逻辑)
         if (screenshot == null) return DefenseAnalyzer.RiverState(visibleCounts, allDiscards)
 
         val imgW = screenshot.width; val imgH = screenshot.height
-        // 河底ROI: 基于画面比例(2800×1264 基准)
-        val scaleX = imgW / 2800.0; val scaleY = imgH / 1264.0
-        val rx = (800 * scaleX).toInt()
-        val ry = (900 * scaleY).toInt()
-        val rw = minOf(imgW - rx, (1400 * scaleX).toInt())
-        val rh = minOf(imgH - ry, (200 * scaleY).toInt())
+        val rx = (1166 * imgW / 2800.0).toInt()
+        val ry = (621 * imgH / 1264.0).toInt()
+        val rw = ((1621 - 1166) * imgW / 2800.0).toInt()
+        val rh = ((923 - 621) * imgH / 1264.0).toInt()
 
         val srcMat = Mat()
         Utils.bitmapToMat(screenshot, srcMat)
@@ -1135,14 +1169,12 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
         clahe.apply(roiRaw, roi)
         roiRaw.release()
 
-        FLog.i("TileMatcher", "河底ROI: x=$rx y=$ry w=$rw h=$rh")
+        FLog.i("TileMatcher", "河底ROI(自家): x=$rx y=$ry w=$rw h=$rh")
 
         data class RiverHit(val tileId: Int, val x: Int, val y: Int, val score: Double)
         val allHits = mutableListOf<RiverHit>()
 
-        // 用 meld 横放模板 + 手牌模板匹配
         for ((tileId, meldPair) in meldTemplates) {
-            // 横放模板优先 (河底牌横放)
             val t = meldPair.second ?: meldPair.first ?: continue
             val tH = t.rows(); val tW = t.cols()
             val eq = Mat(); clahe.apply(t, eq)
@@ -1162,7 +1194,7 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
 
         roi.release(); gray.release()
 
-        // NMS去重: 按x排序, 间距<30px且同tileId的去重取最高分
+        // NMS去重
         allHits.sortBy { it.x }
         val filtered = mutableListOf<RiverHit>()
         for (h in allHits) {
@@ -1171,7 +1203,6 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
             }
         }
 
-        // 统计
         for (h in filtered) {
             if (h.score >= 0.60) {
                 visibleCounts[h.tileId] = minOf(visibleCounts[h.tileId] + 1, 4)
@@ -1179,9 +1210,13 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
             }
         }
 
-        FLog.i("TileMatcher", "河底: ${allHits.size} raw → ${filtered.size} dedup → ${allDiscards.size} tiles")
+        FLog.i("TileMatcher", "河底(OpenCV): ${allHits.size} raw → ${filtered.size} dedup → ${allDiscards.size} tiles")
         return DefenseAnalyzer.RiverState(visibleCounts, allDiscards)
     }
+
+    /** @deprecated 请用 scanAllRivers() */
+    @Deprecated("Use scanAllRivers()", ReplaceWith("scanAllRivers(screenshot)"))
+    fun scanOwnRiver(screenshot: Bitmap?): DefenseAnalyzer.RiverState = scanAllRivers(screenshot)
 
     // ─── 清理 ───
     fun release() {
