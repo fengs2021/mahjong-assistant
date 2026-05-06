@@ -13,6 +13,8 @@ import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.mahjong.assistant.capture.TileMatcher
+import com.mahjong.assistant.engine.Tiles
+import com.mahjong.assistant.engine.YoloDetector
 import com.mahjong.assistant.util.FLog
 import android.content.Intent
 import android.net.Uri
@@ -32,7 +34,21 @@ class TemplateCollectorActivity : AppCompatActivity() {
         const val HAND_SLOT_GAP = 111
         private const val UPLOAD_URL = "http://111.229.221.200:4999/meld/upload"
         private const val UPLOAD_TOKEN = "mahjong-upload-2024"
+
+        // 四方牌河坐标 (PPG-AN00 横屏 2800×1264)
+        data class Region(val name: String, val x1: Int, val y1: Int, val x2: Int, val y2: Int)
+        val riverRegions = listOf(
+            Region("自家(南)", 1166, 621, 1621, 923),
+            Region("对家(北)", 1218, 138, 1595, 380),
+            Region("上家(东)",  802, 297, 1190, 653),
+            Region("下家(西)", 1605, 302, 1991, 663)
+        )
     }
+
+    // YOLO 检测缓存
+    private var yoloDetections: List<YoloDetector.Detection> = emptyList()
+    private var yoloLabels: Map<Int, String> = emptyMap()  // slotIndex → tileName (手牌)
+    private var yoloModelLoaded = false
 
     private lateinit var pathInput: EditText
     private lateinit var statusLabel: TextView
@@ -150,7 +166,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
             if (t == tag) { btn.setBackgroundColor(0xFF2D6A2D.toInt()); btn.setTextColor(0xFF5CFF5C.toInt()) }
             else { btn.setBackgroundColor(0xFF2D3A2D.toInt()); btn.setTextColor(0xFF80B080.toInt()) }
         }
-        doSlice()
+        if (yoloDetections.isNotEmpty()) doSliceWithYolo() else doSlice()
     }
 
     private fun loadAndSlice() {
@@ -169,12 +185,156 @@ class TemplateCollectorActivity : AppCompatActivity() {
             }
             if (currentBitmap == null) { statusLabel.text = "✗ 无法解码图片"; return }
             val w = currentBitmap!!.width; val h = currentBitmap!!.height
-            FLog.i("CollAct", "截图 ${w}×${h} → 切分tab=$currentTab"); statusLabel.text = "截图 ${w}×${h} — $currentTab"
-            doSlice()
+            FLog.i("CollAct", "截图 ${w}×${h} tab=$currentTab"); statusLabel.text = "截图 ${w}×${h} — YOLO识别中..."
+
+            // 加载 YOLO 模型 (首次)
+            if (!yoloModelLoaded) {
+                try {
+                    val modelBytes = assets.open("best_float16.tflite").use { it.readBytes() }
+                    YoloDetector.loadModel(modelBytes)
+                    yoloModelLoaded = true; FLog.i("CollAct", "YOLO model loaded")
+                } catch (e: Exception) {
+                    FLog.e("CollAct", "YOLO load failed", e)
+                }
+            }
+
+            // 后台 YOLO 检测
+            if (yoloModelLoaded) {
+                val img = currentBitmap!!
+                Thread {
+                    try {
+                        yoloDetections = YoloDetector.detect(img)
+                        FLog.i("CollAct", "YOLO done: ${yoloDetections.size} detections")
+                        runOnUiThread { doSliceWithYolo() }
+                    } catch (e: Exception) {
+                        FLog.e("CollAct", "YOLO detect failed", e)
+                        runOnUiThread { yoloModelLoaded = false; doSlice() }
+                    }
+                }.start()
+            } else {
+                doSlice()
+            }
         } catch (e: Exception) { FLog.e("CollAct", "loadAndSlice崩溃", e); statusLabel.text = "✗ ${e.message}" }
     }
 
-    private fun doSlice() {
+    /** YOLO检测后分发到各个Tab的处理 */
+    private fun doSliceWithYolo() {
+        val img = currentBitmap ?: return
+        statusLabel.text = "YOLO: ${yoloDetections.size} tiles — $currentTab"
+        when (currentTab) {
+            "hand" -> { sliceHandWithYoloLabels(img) }
+            "meld" -> { autoMeldAnnotations(img, yoloDetections) }
+            "river" -> { autoRiverAnnotations(img, yoloDetections) }
+            "coord" -> { doSlice() }  // 坐标tab手动标注
+            else -> doSlice()
+        }
+    }
+
+    /**
+     * 手牌Tab: 固定坐标切14槽 → YOLO按x位置分配标签
+     */
+    private fun sliceHandWithYoloLabels(img: Bitmap) {
+        slices.clear(); scrollContent.removeAllViews()
+        meldMarkerView.visibility = View.GONE
+        val scroll = contentArea.getChildAt(1); scroll?.visibility = View.VISIBLE
+        annContainer.visibility = View.GONE; annContainer.removeAllViews()
+        btnAddAnn.parent?.let { (it as View).visibility = View.GONE }
+        isMeldAnnotationMode = false; meldMarkerView.mode = MeldMarkerView.Mode.PAN
+
+        // 固定坐标切14槽
+        sliceHandAndDrawn(img)
+
+        // YOLO手牌检测: 底部左侧区域
+        val bottomTiles = yoloDetections.filter { it.y1 > img.height * 0.7 }.sortedBy { it.x1 }
+        val handTiles = bottomTiles.filter { it.x1 < 2000 }  // 粗略过滤副露
+        yoloLabels = emptyMap()
+
+        // 将YOLO检测按x位置匹配到最近的手牌slot
+        for ((slotIdx, s) in slices.withIndex()) {
+            val slotCenterX = HAND_FACE_X + (if (slotIdx < 13) slotIdx * HAND_SLOT_GAP else (handEndX - HAND_FACE_X)) + HAND_FACE_W / 2
+            val best = handTiles.minByOrNull { kotlin.math.abs((it.x1 + it.x2) / 2 - slotCenterX) }
+            if (best != null && kotlin.math.abs((best.x1 + best.x2) / 2 - slotCenterX) < 60) {
+                yoloLabels = yoloLabels + (slotIdx to best.tileName)
+            }
+        }
+        FLog.i("CollAct", "手牌YOLO: ${yoloLabels.size}/${slices.size} 自动标注")
+
+        // 渲染
+        for ((i, s) in slices.withIndex()) addSliceRow(i, s, scrollContent)
+        statusLabel.text = "截图 ${img.width}x${img.height} — 手牌: ${slices.size}张 (YOLO:${yoloLabels.size})"
+    }
+
+    /**
+     * 副露Tab: YOLO检测底部右侧 → 自动生成标注
+     */
+    private fun autoMeldAnnotations(img: Bitmap, detections: List<YoloDetector.Detection>) {
+        meldMarkerView.setImage(img)
+        meldMarkerView.visibility = View.VISIBLE
+        btnAddAnn.parent?.let { (it as View).visibility = View.VISIBLE }
+        annContainer.visibility = View.VISIBLE
+        val scroll = contentArea.getChildAt(1); scroll?.visibility = View.GONE
+        slices.clear(); isMeldAnnotationMode = false; meldMarkerView.mode = MeldMarkerView.Mode.PAN
+
+        // 底部 + 右侧(手牌区之后)
+        val meldTiles = detections.filter { it.y1 > img.height * 0.7 && it.x1 > 2000 }
+        var n = 0
+        for (d in meldTiles) {
+            val tileName = if (d.tileId in 0..33) tileNames[d.tileId] else "未识别"
+            val dir = if ((d.x2 - d.x1) > (d.y2 - d.y1)) "横" else "竖"
+            val ann = MeldMarkerView.Annotation(
+                points = mutableListOf(
+                    PointF(d.x1.toFloat(), d.y1.toFloat()),
+                    PointF(d.x2.toFloat(), d.y1.toFloat()),
+                    PointF(d.x2.toFloat(), d.y2.toFloat()),
+                    PointF(d.x1.toFloat(), d.y2.toFloat())
+                ),
+                label = tileName, direction = dir
+            )
+            meldMarkerView.addAnnotationDirect(ann); n++
+        }
+        refreshAnnotationList()
+        statusLabel.text = "截图 ${img.width}x${img.height} — 副露: ${n}张 (YOLO自动)"
+        FLog.i("CollAct", "副露YOLO: ${n} annotations")
+    }
+
+    /**
+     * 牌河Tab: YOLO检测四方河底 → 自动生成标注(含区域标签)
+     */
+    private fun autoRiverAnnotations(img: Bitmap, detections: List<YoloDetector.Detection>) {
+        meldMarkerView.setImage(img)
+        meldMarkerView.visibility = View.VISIBLE
+        btnAddAnn.parent?.let { (it as View).visibility = View.VISIBLE }
+        annContainer.visibility = View.VISIBLE
+        val scroll = contentArea.getChildAt(1); scroll?.visibility = View.GONE
+        slices.clear(); isMeldAnnotationMode = false; meldMarkerView.mode = MeldMarkerView.Mode.PAN
+
+        var n = 0
+        for (region in riverRegions) {
+            val tiles = detections.filter { d ->
+                val cx = (d.x1 + d.x2) / 2; val cy = (d.y1 + d.y2) / 2
+                cx in region.x1..region.x2 && cy in region.y1..region.y2
+            }
+            for (d in tiles) {
+                val tileName = if (d.tileId in 0..33) tileNames[d.tileId] else "未识别"
+                val dir = if ((d.x2 - d.x1) > (d.y2 - d.y1)) "横" else "竖"
+                val ann = MeldMarkerView.Annotation(
+                    points = mutableListOf(
+                        PointF(d.x1.toFloat(), d.y1.toFloat()),
+                        PointF(d.x2.toFloat(), d.y1.toFloat()),
+                        PointF(d.x2.toFloat(), d.y2.toFloat()),
+                        PointF(d.x1.toFloat(), d.y2.toFloat())
+                    ),
+                    label = String.format("%s(%s)", tileName, region.name), direction = dir
+                )
+                meldMarkerView.addAnnotationDirect(ann); n++
+            }
+        }
+        refreshAnnotationList()
+        statusLabel.text = "截图 ${img.width}x${img.height} — 牌河: ${n}张 (YOLO自动)"
+        FLog.i("CollAct", "牌河YOLO: ${n} annotations")
+    }
+
+    // ═══════ 原 doSlice (降级用) ═══════
         val img = currentBitmap ?: return; slices.clear(); scrollContent.removeAllViews()
         meldMarkerView.visibility = View.GONE
         contentArea.getChildAt(1)?.visibility = View.GONE  // ScrollView
@@ -333,29 +493,48 @@ class TemplateCollectorActivity : AppCompatActivity() {
             row.addView(TextView(this).apply { text = "${index+1}"; textSize = 9f; setTextColor(0xFF80B080.toInt()); setPadding(0, 0, 4, 0); layoutParams = LinearLayout.LayoutParams(dp(18), LinearLayout.LayoutParams.WRAP_CONTENT) })
             val dstH = dp(48); val dstW = Math.min(dp(52), Math.max(dp(22), s.bmp.width * dstH / s.bmp.height))
             row.addView(ImageView(this).apply { setImageBitmap(Bitmap.createScaledBitmap(s.bmp, dstW, dstH, true)); setBackgroundColor(0xFF1A2A1A.toInt()); layoutParams = LinearLayout.LayoutParams(dstW, dstH).apply { marginEnd = 6 } })
-            val autoResult = autoIdentify(s.bmp)
-            val autoName = if (autoResult != null && autoResult.second >= 0.85) tileNames.getOrNull(autoResult.first) else null
-            val autoLabel = if (autoName != null) autoName else "未识别"; val autoScore = if (autoResult != null) String.format("%.2f", autoResult.second) else ""
-            FLog.i("CollAct", "  auto: $autoLabel score=$autoScore")
+            // YOLO标签优先, 降级模板匹配
+            val yoloName = yoloLabels[index]  // 格式: "1m", "3p", "7z" 等
+            val autoName = if (yoloName != null) {
+                yoloToChinese(yoloName)
+            } else {
+                val result = autoIdentify(s.bmp)
+                if (result != null && result.second >= 0.85) tileNames.getOrNull(result.first) else null
+            }
+            val autoLabel = autoName ?: "未识别"
+            FLog.i("CollAct", "  auto[$index]: $autoLabel (YOLO=${yoloName != null})")
             val spinner = Spinner(this).apply {
                 val options = mutableListOf("未识别"); options.addAll(tileNames)
                 adapter = ArrayAdapter(this@TemplateCollectorActivity, android.R.layout.simple_spinner_dropdown_item, options)
                 setBackgroundColor(0xFF2D3A2D.toInt()); setPopupBackgroundDrawable(ColorDrawable(0xFF1A2E1A.toInt()))
                 val selIdx = if (autoName != null) tileNames.indexOf(autoName)+1 else 0; if (selIdx >= 0) setSelection(selIdx)
-                tag = s; s.label = if (autoName != null) autoName else "未识别"
+                tag = s; s.label = autoLabel
                 setOnItemSelectedListener(object : AdapterView.OnItemSelectedListener {
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) { s.label = parent?.getItemAtPosition(pos)?.toString() ?: "未识别" }
                     override fun onNothingSelected(parent: AdapterView<*>?) {}
                 }); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }; row.addView(spinner)
-            val labelColor = when { autoName != null && autoResult!!.second >= 0.85 -> 0xFF5CFF5C.toInt(); autoName != null -> 0xFFA0C040.toInt(); else -> 0xFF606060.toInt() }
-            val showText = when { autoName != null -> "$autoLabel $autoScore"; autoResult != null && autoResult.first in 0 until tileNames.size -> "最佳:" + tileNames[autoResult.first] + " " + String.format("%.2f", autoResult.second); else -> "未识别" }
+            val labelColor = if (autoName != null) 0xFF5CFF5C.toInt() else 0xFF606060.toInt()
+            val showText = if (autoName != null) "YOLO:$autoLabel" else "模板:未识别"
             row.addView(TextView(this).apply { text = showText; textSize = 9f; setTextColor(labelColor); layoutParams = LinearLayout.LayoutParams(dp(76), LinearLayout.LayoutParams.WRAP_CONTENT) })
             parent.addView(row)
         } catch (e: Exception) { FLog.e("CollAct", "addSliceRow[$index] 崩溃", e) }
     }
 
     private fun autoIdentify(bmp: Bitmap): Pair<Int, Double>? = TileMatcher.identifySingleTile(bmp)
+
+    /** YOLO类名(如"1m","7z") → 中文牌名 */
+    private fun yoloToChinese(yoloName: String): String? {
+        val suit = yoloName.last(); val num = yoloName.dropLast(1).toIntOrNull() ?: return null
+        val idx = when (suit) {
+            'm' -> num - 1
+            'p' -> num + 8
+            's' -> num + 17
+            'z' -> when (num) { 1 -> 27; 2 -> 28; 3 -> 29; 4 -> 30; 5 -> 31; 6 -> 32; 7 -> 33; else -> -1 }
+            else -> -1
+        }
+        return tileNames.getOrNull(idx)
+    }
 
     // ═══════ 保存 ═══════
     private fun saveAll() {

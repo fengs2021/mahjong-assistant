@@ -76,6 +76,11 @@ class MeldMarkerView @JvmOverloads constructor(
 
     fun getAnnotations(): List<Annotation> = annotations.toList()
 
+    /** 程序化添加标注 (用于YOLO自动识别) */
+    fun addAnnotationDirect(ann: Annotation) {
+        annotations.add(ann); invalidate()
+    }
+
     /** 从原始bitmap中按标注框裁切 */
     fun cropAnnotation(ann: Annotation): Bitmap? {
         val bmp = sourceBitmap ?: return null
