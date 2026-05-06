@@ -352,7 +352,6 @@ object TileMatcher {
                 // 手牌不足13张 → 扫描右下副露区域
                 if (posResults.size < 13) {
                     val meldResults = scanMeldArea(screenshot, lastHandY, lastHandH,
-                    handCount = posResults.size,
                     excludedIds = posResults.map { it.tileId }.toSet())
                     FLog.i("TileMatcher", "副露扫描: ${meldResults.size}张 → 合并=${posResults.size + meldResults.size}")
                     posResults + meldResults
