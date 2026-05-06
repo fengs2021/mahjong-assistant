@@ -358,7 +358,10 @@ object TileMatcher {
                 lastYoloDetections = detections
                 if (results.isNotEmpty()) {
                     // 交叉验证: 底部低置信度YOLO结果用模板匹配覆盖
-                    val validated = crossValidateBottom(results, detections, screenshot)
+                    val bottomDets = detections
+                        .filter { it.y1 > screenshot.height * 0.75 || it.y2 > screenshot.height * 0.75 }
+                        .sortedBy { it.x1 }
+                    val validated = crossValidateBottom(results, bottomDets, screenshot)
                     val handOnly = detections.filter { it.y1 > screenshot.height * 0.7 }.sortedBy { it.x1 }
                     if (handOnly.isNotEmpty()) {
                         lastHandY = handOnly.map { it.y1 }.minOrNull() ?: 1106
@@ -454,7 +457,7 @@ object TileMatcher {
      */
     private fun crossValidateBottom(
         results: List<MatchResult>,
-        detections: List<YoloDetector.Detection>,
+        bottomDets: List<YoloDetector.Detection>,
         screenshot: Bitmap
     ): List<MatchResult> {
         if (!templatesLoaded || !opencvReady || results.isEmpty()) return results
@@ -464,9 +467,7 @@ object TileMatcher {
         for ((idx, r) in results.withIndex()) {
             if (r.confidence >= 0.4) continue  // YOLO高置信度不覆盖
 
-            // 在detections中找到对应的检测框(按顺序对应底部牌)
-            val d = detections.getOrNull(idx) ?: continue
-            if (d.y1 <= screenshot.height * 0.7 && d.y2 <= screenshot.height * 0.7) continue  // 非底部
+            val d = bottomDets.getOrNull(idx) ?: continue
 
             // 裁剪牌面+模板匹配
             val x = d.x1.coerceIn(0, screenshot.width - 1)
