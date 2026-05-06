@@ -24,8 +24,6 @@ import kotlin.math.min
 object YoloDetector {
 
     private const val INPUT_SIZE = 640
-    private const val CONF_THRESHOLD = 0.5f
-    private const val IOU_THRESHOLD = 0.3f
 
     // 34 类牌名 (模型输出顺序)
     private val CLASS_NAMES = arrayOf(
@@ -103,7 +101,7 @@ object YoloDetector {
         val stretched = stretchContrast(gray)
         // 直接缩放到640×640 (model训练时用的, 不用letterbox)
         val scaled = Bitmap.createScaledBitmap(stretched, INPUT_SIZE, INPUT_SIZE, true)
-        return scaled to PaddingInfo(INPUT_SIZE.toFloat() / bitmap.width, INPUT_SIZE.toFloat() / bitmap.height, 0, 0)
+        return scaled to PaddingInfo(INPUT_SIZE.toFloat() / bitmap.width, INPUT_SIZE.toFloat() / bitmap.height, 0, 0, bitmap.height)
     }
 
     private fun stretchContrast(bitmap: Bitmap): Bitmap {
@@ -143,7 +141,7 @@ object YoloDetector {
             }
             drawBitmap(bitmap, m, Paint(Paint.ANTI_ALIAS_FLAG))
         }
-        return out to PaddingInfo(scale, scale, padX, padY)
+        return out to PaddingInfo(scale, scale, padX, padY, bitmap.height)
     }
 
     // ─── 推理输入 ───
@@ -165,7 +163,16 @@ object YoloDetector {
 
     // ─── 后处理 ───
 
-    data class PaddingInfo(val scaleX: Float, val scaleY: Float, val padX: Int, val padY: Int)
+    private const val CONF_THRESHOLD = 0.25f  // 降低阈值, 模型输出偏低
+    private const val IOU_THRESHOLD = 0.3f    // 河底NMS IoU阈值
+    
+    // 手牌底部去重用坐标聚类 (不是NMS, 手牌紧密排列IoU高会被误杀)
+    private const val BOTTOM_CLUSTER_GAP = 150  // x间距<150px视为同一簇(同位置)
+
+    // ═══════ 后处理 ═══════
+
+    data class PaddingInfo(val scaleX: Float, val scaleY: Float, val padX: Int, val padY: Int,
+                           val imgHeight: Int)  // 需要imgHeight判定底部
 
     private fun postprocess(output: Array<FloatArray>, padding: PaddingInfo): List<Detection> {
         val detections = mutableListOf<Detection>()
@@ -194,7 +201,55 @@ object YoloDetector {
                 confidence = maxConf
             ))
         }
-        return applyNMS(detections)
+        return regionFilter(detections, padding.imgHeight)
+    }
+
+    /** 分区去重: 底部(y>70%imgH)坐标聚类, 河底标准NMS */
+    private fun regionFilter(detections: List<Detection>, imgHeight: Int): List<Detection> {
+        val bottomThresh = (imgHeight * 0.7).toInt()
+        val bottom = detections.filter { it.y1 > bottomThresh || it.y2 > bottomThresh }
+        val upper = detections.filter { it.y1 <= bottomThresh && it.y2 <= bottomThresh }
+
+        // 底部: x坐标聚类 (同一簇保留最高分)
+        val bottomFiltered = clusterByX(bottom.sortedBy { it.x1 })
+
+        // 河底: 标准NMS
+        val upperFiltered = applyNMS(upper)
+
+        val result = bottomFiltered + upperFiltered
+        FLog.i("Yolo", String.format("post: raw=%d → bottom[%d→%d] upper[%d→%d]",
+            detections.size, bottom.size, bottomFiltered.size, upper.size, upperFiltered.size))
+        return result
+    }
+
+    /** x坐标聚类: 间距<BOTTOM_CLUSTER_GAP的归为同簇, 每簇保留最高分 */
+    private fun clusterByX(sorted: List<Detection>): List<Detection> {
+        if (sorted.size <= 1) return sorted
+        val result = mutableListOf<Detection>()
+        var clusterBest = sorted[0]
+        for (i in 1 until sorted.size) {
+            val cur = sorted[i]
+            if (cur.x1 - clusterBest.x2 < BOTTOM_CLUSTER_GAP) {
+                if (cur.confidence > clusterBest.confidence) clusterBest = cur
+            } else {
+                result.add(clusterBest)
+                clusterBest = cur
+            }
+        }
+        result.add(clusterBest)
+        // 二次过滤: 同tileId且x间距<30px只保留最高分
+        return dedupByTileX(result)
+    }
+
+    private fun dedupByTileX(detections: List<Detection>): List<Detection> {
+        val sorted = detections.sortedBy { it.tileId * 10000 + it.x1 }
+        val result = mutableListOf<Detection>()
+        for (d in sorted) {
+            if (result.none { it.tileId == d.tileId && kotlin.math.abs(it.x1 - d.x1) < 30 }) {
+                result.add(d)
+            }
+        }
+        return result
     }
 
     private fun applyNMS(detections: List<Detection>): List<Detection> {
