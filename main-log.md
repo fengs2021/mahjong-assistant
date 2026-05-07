@@ -1,4 +1,7 @@
-- 260507 0830 需求：YOLO仅用于采集辅助标注，运行时全用模板匹配（定位+分类）
-- 260507 0832 Orchestrator完成：删init中YOLO加载 + import → 剩余重构委托KotlinDev
-- 260507 0840 KotlinDev完成：6项改动，1210→1132行(-78)。recognizeImpl删YOLO块/crossValidate/categorizeYoloDetections/lastYoloDetections，重构RiverRegion+scanAllRivers
+- 260507 0830 需求：YOLO仅用于采集辅助标注，运行时全用模板匹配
+- 260507 0832 Orchestrator：删init中YOLO加载 + import → 剩余重构委托KotlinDev
+- 260507 0840 KotlinDev完成：6项改动，1210→1132行。recognizeImpl删YOLO块/crossValidate/categorizeYoloDetections/lastYoloDetections，重构RiverRegion+scanAllRivers
 - 260507 0841 改动验证通过 → 待编译
+- 260507 0850 编译PASS: run #25470542138 → 飞书已发
+- 260507 0900 新需求：采集器手牌/副露/河牌全部模板匹配，手牌允许保存修正
+- 260507 0903 KotlinDev完成：手牌/副露/河牌全部TM覆盖YOLO，手牌tab可保存

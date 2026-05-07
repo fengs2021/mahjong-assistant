@@ -58,6 +58,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
     private lateinit var meldMarkerView: MeldMarkerView
     private lateinit var btnAddAnn: Button; private lateinit var btnDoneAnn: Button; private lateinit var btnDelAnn: Button
     private lateinit var annContainer: LinearLayout
+    private lateinit var annScroll: ScrollView
     private var isMeldAnnotationMode = false
 
     data class TileSlice(val id: String, val bmp: Bitmap, var label: String)
@@ -126,9 +127,13 @@ class TemplateCollectorActivity : AppCompatActivity() {
             }; annBtnRow.addView(btnDelAnn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             root.addView(annBtnRow)
 
-            // 标注列表(默认隐藏)
-            annContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
-            root.addView(annContainer)
+            // 标注列表(默认隐藏, 最大200dp可滚动)
+            annContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            annScroll = ScrollView(this).apply {
+                addView(annContainer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+                visibility = View.GONE
+            }
+            root.addView(annScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(200)))
 
             // 保存
             Button(this).apply {
@@ -250,9 +255,16 @@ class TemplateCollectorActivity : AppCompatActivity() {
             val w = (d.x2 - d.x1).coerceIn(4, img.width - x1)
             val h = (d.y2 - d.y1).coerceIn(4, img.height - y1)
             val tileBmp = Bitmap.createBitmap(img, x1, y1, w, h)
-            val tileName = yoloToChinese(d.tileName) ?: "未识别"
+            // 模板匹配优先: YOLO只定位, 模板匹配判分类
+            val tmResult = autoIdentify(tileBmp)
+            val autoName = if (tmResult != null && tmResult.second >= 0.85) {
+                tileNames.getOrNull(tmResult.first)
+            } else {
+                yoloToChinese(d.tileName)
+            }
             val dir = if (w > h) "横" else "竖"
-            slices.add(TileSlice("${tileName}_${dir}", tileBmp, tileName))
+            val label = autoName ?: "未识别"
+            slices.add(TileSlice("${label}_${dir}", tileBmp, label))
         }
 
         FLog.i("CollAct", "底部全部: ${bottomTiles.size}张 (手牌+副露)")
@@ -275,7 +287,21 @@ class TemplateCollectorActivity : AppCompatActivity() {
         val meldTiles = detections.filter { it.y1 > img.height * 0.7 && it.x1 > 2000 }
         var n = 0
         for (d in meldTiles) {
-            val tileName = if (d.tileId in 0..33) tileNames[d.tileId] else "未识别"
+            // 裁剪牌面 → 模板匹配验证YOLO结果
+            val x1 = d.x1.coerceIn(0, img.width - 1)
+            val y1 = d.y1.coerceIn(0, img.height - 1)
+            val w = (d.x2 - d.x1).coerceIn(4, img.width - x1)
+            val h = (d.y2 - d.y1).coerceIn(4, img.height - y1)
+            val tileBmp = Bitmap.createBitmap(img, x1, y1, w, h)
+            val tmResult = autoIdentify(tileBmp)
+            val tileName = if (tmResult != null && tmResult.second >= 0.85) {
+                tileNames.getOrNull(tmResult.first) ?: "未识别"
+            } else if (d.tileId in 0..33) {
+                tileNames[d.tileId]
+            } else {
+                "未识别"
+            }
+            val displayLabel = if (tmResult != null && tmResult.second >= 0.85) "${tileName}(TM)" else tileName
             val dir = if ((d.x2 - d.x1) > (d.y2 - d.y1)) "横" else "竖"
             val ann = MeldMarkerView.Annotation(
                 points = mutableListOf(
@@ -284,13 +310,13 @@ class TemplateCollectorActivity : AppCompatActivity() {
                     PointF(d.x2.toFloat(), d.y2.toFloat()),
                     PointF(d.x1.toFloat(), d.y2.toFloat())
                 ),
-                label = tileName, direction = dir
+                label = displayLabel, direction = dir
             )
             meldMarkerView.addAnnotationDirect(ann); n++
         }
         refreshAnnotationList()
-        statusLabel.text = "截图 ${img.width}x${img.height} — 副露: ${n}张 (YOLO自动)"
-        FLog.i("CollAct", "副露YOLO: ${n} annotations")
+        statusLabel.text = "截图 ${img.width}x${img.height} — 副露: ${n}张 (TM验证)"
+        FLog.i("CollAct", "副露TM: ${n} annotations")
     }
 
     /**
@@ -311,7 +337,25 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 cx in region.x1..region.x2 && cy in region.y1..region.y2
             }
             for (d in tiles) {
-                val tileName = if (d.tileId in 0..33) tileNames[d.tileId] else "未识别"
+                // 裁剪牌面 → 模板匹配验证YOLO结果
+                val x1 = d.x1.coerceIn(0, img.width - 1)
+                val y1 = d.y1.coerceIn(0, img.height - 1)
+                val w = (d.x2 - d.x1).coerceIn(4, img.width - x1)
+                val h = (d.y2 - d.y1).coerceIn(4, img.height - y1)
+                val tileBmp = Bitmap.createBitmap(img, x1, y1, w, h)
+                val tmResult = autoIdentify(tileBmp)
+                val tileName = if (tmResult != null && tmResult.second >= 0.85) {
+                    tileNames.getOrNull(tmResult.first) ?: "未识别"
+                } else if (d.tileId in 0..33) {
+                    tileNames[d.tileId]
+                } else {
+                    "未识别"
+                }
+                val displayLabel = if (tmResult != null && tmResult.second >= 0.85) {
+                    String.format("%s(TM)(%s)", tileName, region.name)
+                } else {
+                    String.format("%s(%s)", tileName, region.name)
+                }
                 val dir = if ((d.x2 - d.x1) > (d.y2 - d.y1)) "横" else "竖"
                 val ann = MeldMarkerView.Annotation(
                     points = mutableListOf(
@@ -320,14 +364,14 @@ class TemplateCollectorActivity : AppCompatActivity() {
                         PointF(d.x2.toFloat(), d.y2.toFloat()),
                         PointF(d.x1.toFloat(), d.y2.toFloat())
                     ),
-                    label = String.format("%s(%s)", tileName, region.name), direction = dir
+                    label = displayLabel, direction = dir
                 )
                 meldMarkerView.addAnnotationDirect(ann); n++
             }
         }
         refreshAnnotationList()
-        statusLabel.text = "截图 ${img.width}x${img.height} — 牌河: ${n}张 (YOLO自动)"
-        FLog.i("CollAct", "牌河YOLO: ${n} annotations")
+        statusLabel.text = "截图 ${img.width}x${img.height} — 牌河: ${n}张 (TM验证)"
+        FLog.i("CollAct", "牌河TM: ${n} annotations")
     }
 
     // ═══════ 原 doSlice (降级用) ═══════
@@ -490,13 +534,18 @@ class TemplateCollectorActivity : AppCompatActivity() {
             row.addView(TextView(this).apply { text = "${index+1}"; textSize = 9f; setTextColor(0xFF80B080.toInt()); setPadding(0, 0, 4, 0); layoutParams = LinearLayout.LayoutParams(dp(18), LinearLayout.LayoutParams.WRAP_CONTENT) })
             val dstH = dp(48); val dstW = Math.min(dp(52), Math.max(dp(22), s.bmp.width * dstH / s.bmp.height))
             row.addView(ImageView(this).apply { setImageBitmap(Bitmap.createScaledBitmap(s.bmp, dstW, dstH, true)); setBackgroundColor(0xFF1A2A1A.toInt()); layoutParams = LinearLayout.LayoutParams(dstW, dstH).apply { marginEnd = 6 } })
-            // 标签已在 TileSlice.label 中 (YOLO自动标注)
-            val autoName = if (s.label != "未识别" && s.label.isNotEmpty()) s.label else {
-                val result = autoIdentify(s.bmp)
-                if (result != null && result.second >= 0.85) tileNames.getOrNull(result.first) else null
+            // 模板匹配优先: 始终跑模板匹配，score≥0.85用TM结果，否则降级YOLO
+            val tmResult = autoIdentify(s.bmp)
+            val autoName = if (tmResult != null && tmResult.second >= 0.85) {
+                tileNames.getOrNull(tmResult.first)
+            } else if (s.label != "未识别" && s.label.isNotEmpty()) {
+                s.label  // YOLO标签作为备选
+            } else {
+                null
             }
             val autoLabel = autoName ?: "未识别"
-            FLog.i("CollAct", "  auto[$index]: $autoLabel")
+            val isTmMatch = tmResult != null && tmResult.second >= 0.85
+            FLog.i("CollAct", "  auto[$index]: $autoLabel" + if (isTmMatch) " (TM)" else " (YOLO)")
             val spinner = Spinner(this).apply {
                 val options = mutableListOf("未识别"); options.addAll(tileNames)
                 adapter = ArrayAdapter(this@TemplateCollectorActivity, android.R.layout.simple_spinner_dropdown_item, options)
@@ -509,7 +558,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 }); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }; row.addView(spinner)
             val labelColor = if (autoName != null) 0xFF5CFF5C.toInt() else 0xFF606060.toInt()
-            val showText = if (autoName != null) "YOLO:$autoLabel" else "模板:未识别"
+            val showText = if (isTmMatch) "TM:$autoLabel" else if (autoName != null) "YOLO:$autoLabel" else "未识别"
             row.addView(TextView(this).apply { text = showText; textSize = 9f; setTextColor(labelColor); layoutParams = LinearLayout.LayoutParams(dp(76), LinearLayout.LayoutParams.WRAP_CONTENT) })
             parent.addView(row)
         } catch (e: Exception) { FLog.e("CollAct", "addSliceRow[$index] 崩溃", e) }
@@ -536,8 +585,29 @@ class TemplateCollectorActivity : AppCompatActivity() {
             "meld" -> saveAnnotationsTo("meld_tiles")
             "river" -> saveAnnotationsTo("river_tiles")
             "coord" -> saveZoneCoords()
-            else -> Toast.makeText(this, "手牌模板已完善(34/34)，无需重复采集。请切换到副露/牌河/坐标Tab标注后保存", Toast.LENGTH_LONG).show()
+            else -> saveHandSlices()
         }
+    }
+
+    private fun saveHandSlices() {
+        if (slices.isEmpty()) { Toast.makeText(this, "请先加载截图", Toast.LENGTH_SHORT).show(); return }
+        val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "mahjong_templates/hand_templates")
+        if (!outDir.exists()) outDir.mkdirs()
+        var saved = 0; var skipped = 0
+        for (s in slices) {
+            if (s.label == "未识别" || s.label.isEmpty()) { skipped++; continue }
+            var candidate = "${s.label}.png"; var counter = 2
+            while (File(outDir, candidate).exists()) { candidate = "${s.label}${counter}.png"; counter++ }
+            try {
+                FileOutputStream(File(outDir, candidate)).use { s.bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                saved++
+            } catch (_: Exception) { skipped++; continue }
+        }
+        FLog.i("CollAct", "hand_templates 保存: $saved/$saved+$skipped")
+        AlertDialog.Builder(this).setTitle("完成")
+            .setMessage("手牌保存: $saved 张\n跳过: $skipped 张\n→ ${outDir.absolutePath}")
+            .setPositiveButton("确定", null).show()
+        statusLabel.text = "手牌保存 $saved 张"
     }
 
     private fun saveAnnotationsTo(subdir: String) {
