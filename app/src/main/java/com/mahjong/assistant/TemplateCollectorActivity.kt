@@ -48,6 +48,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
     // YOLO 检测缓存
     private var yoloDetections: List<YoloDetector.Detection> = emptyList()
     private var yoloModelLoaded = false
+    private var tmInited = false
 
     private lateinit var pathInput: EditText
     private lateinit var statusLabel: TextView
@@ -189,7 +190,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
             }
             if (currentBitmap == null) { statusLabel.text = "✗ 无法解码图片"; return }
             val w = currentBitmap!!.width; val h = currentBitmap!!.height
-            FLog.i("CollAct", "截图 ${w}×${h} tab=$currentTab"); statusLabel.text = "截图 ${w}×${h} — YOLO识别中..."
+            FLog.i("CollAct", "截图 ${w}×${h} tab=$currentTab"); statusLabel.text = "截图 ${w}×${h} — 识别中..."
 
             // 加载 YOLO 模型 (首次)
             if (!yoloModelLoaded) {
@@ -200,6 +201,11 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     FLog.e("CollAct", "YOLO load failed", e)
                 }
+            }
+            // 初始化模板匹配 (识别用)
+            if (!tmInited) {
+                tmInited = TileMatcher.init(this)
+                FLog.i("CollAct", "TileMatcher init=$tmInited")
             }
 
             // 后台 YOLO 检测
@@ -241,7 +247,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
         slices.clear(); scrollContent.removeAllViews()
         meldMarkerView.visibility = View.GONE
         val scroll = contentArea.getChildAt(1); scroll?.visibility = View.VISIBLE
-        annContainer.visibility = View.GONE; annContainer.removeAllViews()
+        annScroll.visibility = View.GONE; annContainer.removeAllViews()
         btnAddAnn.parent?.let { (it as View).visibility = View.GONE }
         isMeldAnnotationMode = false; meldMarkerView.mode = MeldMarkerView.Mode.PAN
 
@@ -269,7 +275,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
         FLog.i("CollAct", "底部全部: ${bottomTiles.size}张 (手牌+副露)")
         for ((i, s) in slices.withIndex()) addSliceRow(i, s, scrollContent)
-        statusLabel.text = "截图 ${img.width}x${img.height} — 底部: ${slices.size}张 (YOLO)"
+        statusLabel.text = "截图 ${img.width}x${img.height} — 底部: ${slices.size}张 (TM验证)"
     }
 
     /**
@@ -279,7 +285,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
         meldMarkerView.setImage(img)
         meldMarkerView.visibility = View.VISIBLE
         btnAddAnn.parent?.let { (it as View).visibility = View.VISIBLE }
-        annContainer.visibility = View.VISIBLE
+        annScroll.visibility = View.VISIBLE
         val scroll = contentArea.getChildAt(1); scroll?.visibility = View.GONE
         slices.clear(); isMeldAnnotationMode = false; meldMarkerView.mode = MeldMarkerView.Mode.PAN
 
@@ -326,7 +332,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
         meldMarkerView.setImage(img)
         meldMarkerView.visibility = View.VISIBLE
         btnAddAnn.parent?.let { (it as View).visibility = View.VISIBLE }
-        annContainer.visibility = View.VISIBLE
+        annScroll.visibility = View.VISIBLE
         val scroll = contentArea.getChildAt(1); scroll?.visibility = View.GONE
         slices.clear(); isMeldAnnotationMode = false; meldMarkerView.mode = MeldMarkerView.Mode.PAN
 
@@ -379,7 +385,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
         val img = currentBitmap ?: return; slices.clear(); scrollContent.removeAllViews()
         meldMarkerView.visibility = View.GONE
         contentArea.getChildAt(1)?.visibility = View.GONE  // ScrollView
-        annContainer.visibility = View.GONE; annContainer.removeAllViews()
+        annScroll.visibility = View.GONE; annContainer.removeAllViews()
         btnAddAnn.parent?.let { (it as View).visibility = View.GONE }
         isMeldAnnotationMode = false
         meldMarkerView.mode = MeldMarkerView.Mode.PAN
@@ -396,7 +402,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 meldMarkerView.setImage(img)
                 meldMarkerView.visibility = View.VISIBLE
                 btnAddAnn.parent?.let { (it as View).visibility = View.VISIBLE }
-                annContainer.visibility = View.VISIBLE
+                annScroll.visibility = View.VISIBLE
                 slices.clear()
             }
         }
@@ -581,6 +587,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
     // ═══════ 保存 ═══════
     private fun saveAll() {
+        FLog.i("CollAct", "saveAll tab=$currentTab")
         when (currentTab) {
             "meld" -> saveAnnotationsTo("meld_tiles")
             "river" -> saveAnnotationsTo("river_tiles")
