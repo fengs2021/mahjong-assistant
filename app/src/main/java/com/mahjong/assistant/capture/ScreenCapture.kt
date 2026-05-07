@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.mahjong.assistant.engine.DefenseAnalyzer
 import com.mahjong.assistant.engine.Tiles
-import com.mahjong.assistant.engine.YoloDetector
 import com.mahjong.assistant.util.FLog
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
@@ -15,7 +14,7 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * 牌面模板匹配识别器 v5.0
+ * 牌面模板匹配识别器 v6.0
  *
  * 识别策略:
  *   1. 精准定位 (主): 固定坐标裁剪每张牌, 直接模板匹配 — 快速精准
@@ -113,15 +112,6 @@ object TileMatcher {
     fun init(context: Context): Boolean {
         FLog.i("TileMatcher", "init start")
         return try {
-            // YOLO 模型优先
-            try {
-                val modelBytes = context.assets.open("best_float16.tflite").use { it.readBytes() }
-                YoloDetector.loadModel(modelBytes)
-                FLog.i("TileMatcher", "YOLO model loaded")
-            } catch (e: Exception) {
-                FLog.e("TileMatcher", "YOLO load failed, fallback templates", e)
-            }
-
             opencvReady = try {
                 OpenCVLoader.initLocal().also {
                     android.util.Log.i(TAG, "OpenCV initLocal: $it")
@@ -143,9 +133,9 @@ object TileMatcher {
             val meldCount = loadMeldTemplates(context)
 
             initDiagnostic = if (templatesLoaded) {
-                "就绪: YOLO+${templates.size}/34模板 + ${meldCount}副露"
+                "就绪: ${templates.size}/34模板 + ${meldCount}副露"
             } else {
-                "就绪: YOLO"
+                "就绪: 仅模板匹配"
             }
             FLog.i("TileMatcher", initDiagnostic)
             android.util.Log.i(TAG, initDiagnostic)
@@ -350,38 +340,7 @@ object TileMatcher {
     private fun recognizeImpl(screenshot: Bitmap): Pair<List<MatchResult>, Double> {
         FLog.i("TileMatcher", "recognizeImpl start ${screenshot.width}x${screenshot.height}")
 
-        // ─── YOLO 检测 (主方案: 全图端到端) ───
-        try {
-            val detections = YoloDetector.detect(screenshot)
-            if (detections.isNotEmpty()) {
-                val results = categorizeYoloDetections(detections, screenshot.height)
-                lastYoloDetections = detections
-                if (results.isNotEmpty()) {
-                    // 交叉验证: 底部低置信度YOLO结果用模板匹配覆盖
-                    val bottomDets = detections
-                        .filter { it.y1 > screenshot.height * 0.75 || it.y2 > screenshot.height * 0.75 }
-                        .sortedBy { it.x1 }
-                    val validated = crossValidateBottom(results, bottomDets, screenshot)
-                    val handOnly = detections.filter { it.y1 > screenshot.height * 0.7 }.sortedBy { it.x1 }
-                    if (handOnly.isNotEmpty()) {
-                        lastHandY = handOnly.map { it.y1 }.minOrNull() ?: 1106
-                        lastHandH = handOnly.map { it.y2 - it.y1 }.maxOrNull() ?: 143
-                    }
-                    val tileIds = validated.map { it.tileId }.toIntArray()
-                    FLog.i("TileMatcher", "YOLO: ${detections.size} detections → ${validated.size} 结果 (交叉验证后)")
-                    android.util.Log.i(TAG, "YOLO: ${Tiles.toDisplayString(tileIds.copyOfRange(0, minOf(14, tileIds.size)))}")
-                    return Pair(validated, if (validated.isNotEmpty()) 0.95 else -1.0)
-                }
-                val tileIds = results.map { it.tileId }.toIntArray()
-                FLog.i("TileMatcher", "YOLO: ${detections.size} detections → ${results.size} 结果")
-                android.util.Log.i(TAG, "YOLO: ${Tiles.toDisplayString(tileIds.copyOfRange(0, minOf(14, tileIds.size)))}")
-                return Pair(results, if (results.isNotEmpty()) 0.95 else -1.0)
-            }
-        } catch (e: Exception) {
-            FLog.e("TileMatcher", "YOLO detect failed, fallback to templates", e)
-        }
-
-        // ─── 模板匹配 (降级方案) ───
+        // ─── 模板匹配 (主方案) ───
         if (!templatesLoaded) {
             lastLog = "模板未加载"
             return Pair(emptyList(), -1.0)
@@ -433,11 +392,7 @@ object TileMatcher {
     // ═══════════════════════════════════════════
 
     data class RiverRegion(val name: String, val x1: Int, val y1: Int, val x2: Int, val y2: Int) {
-        fun contains(det: YoloDetector.Detection): Boolean {
-            val cx = (det.x1 + det.x2) / 2
-            val cy = (det.y1 + det.y2) / 2
-            return cx in x1..x2 && cy in y1..y2
-        }
+        fun contains(cx: Int, cy: Int): Boolean = cx in x1..x2 && cy in y1..y2
     }
 
     private val riverRegions = listOf(
@@ -446,52 +401,6 @@ object TileMatcher {
         RiverRegion("上家(东)",  802, 297, 1190, 653),
         RiverRegion("下家(西)", 1605, 302, 1991, 663)
     )
-
-    // ═══════════════════════════════════════════
-    // 交叉验证: YOLO低置信度 → 模板匹配覆盖
-    // ═══════════════════════════════════════════
-
-    /**
-     * 对底部牌用模板匹配交叉验证: YOLO置信度<0.4时, 用模板匹配结果覆盖。
-     * 模板匹配对手牌精度极高(0.99+), 能自动纠正YOLO误检。
-     */
-    private fun crossValidateBottom(
-        results: List<MatchResult>,
-        bottomDets: List<YoloDetector.Detection>,
-        screenshot: Bitmap
-    ): List<MatchResult> {
-        if (!templatesLoaded || !opencvReady || results.isEmpty()) return results
-
-        val validated = results.toMutableList()
-        var corrected = 0
-        for ((idx, r) in results.withIndex()) {
-            val d = bottomDets.getOrNull(idx) ?: continue
-
-            // 裁剪牌面+模板匹配
-            val x = d.x1.coerceIn(0, screenshot.width - 1)
-            val y = d.y1.coerceIn(0, screenshot.height - 1)
-            val w = (d.x2 - d.x1).coerceIn(10, screenshot.width - x)
-            val h = (d.y2 - d.y1).coerceIn(10, screenshot.height - y)
-
-            try {
-                val tileBmp = Bitmap.createBitmap(screenshot, x, y, w, h)
-                val tmResult = identifySingleTile(tileBmp)
-                tileBmp.recycle()
-
-                if (tmResult != null && tmResult.second >= 0.85) {
-                    validated[idx] = MatchResult(tmResult.first, tmResult.second, false)
-                    corrected++
-                    FLog.i("TileMatcher", String.format(
-                        "  xval[%d]: YOLO=%s(%.2f) → TM=%s(%.3f)",
-                        idx, Tiles.name(r.tileId), r.confidence, Tiles.name(tmResult.first), tmResult.second))
-                }
-            } catch (e: Exception) {
-                // 裁剪失败忽略
-            }
-        }
-        if (corrected > 0) FLog.i("TileMatcher", "交叉验证: $corrected 张修正")
-        return validated
-    }
 
     // ═══════════════════════════════════════════
     // 四家河底数据 (为放铳率计算准备)
@@ -504,66 +413,8 @@ object TileMatcher {
         val right: DefenseAnalyzer.RiverState     // 下家(西)
     )
 
-    // YOLO 检测缓存
-    @Volatile private var lastYoloDetections: List<YoloDetector.Detection> = emptyList()
     // 四家河底缓存 (识别完成后再调用 scanAllRivers 获取)
     @Volatile private var lastFourRiver: FourRiverState? = null
-
-    // ═══════════════════════════════════════════
-    // YOLO 检测结果分类: 底部全归手牌, 河底分四家
-    // ═══════════════════════════════════════════
-
-    /**
-     * 将 YOLO 全图检测结果按空间位置分类:
-     *   - 底部 (y > imgH*0.75): 全部归为手牌, 按x排序, 不拆分手牌/副露
-     *   - 中部 (y ≤ imgH*0.75): 按四方坐标分入四家河底
-     */
-    private fun categorizeYoloDetections(
-        detections: List<YoloDetector.Detection>,
-        imgHeight: Int
-    ): List<MatchResult> {
-        val bottomThreshold = (imgHeight * 0.75).toInt()
-
-        // 底部全部归手牌, 按x排序 (不少于13张时能组成牌型)
-        val bottomTiles = detections
-            .filter { it.y1 > bottomThreshold || it.y2 > bottomThreshold }
-            .sortedBy { it.x1 }
-
-        // 河底按四方区域分类
-        val riverPerRegion = Array(riverRegions.size) { mutableListOf<Int>() }
-        for (d in detections) {
-            if (d.tileId !in 0..33) continue
-            if (d.y1 <= bottomThreshold && d.y2 <= bottomThreshold) {
-                for ((idx, region) in riverRegions.withIndex()) {
-                    if (region.contains(d)) { riverPerRegion[idx].add(d.tileId); break }
-                }
-            }
-        }
-
-        // 组装结果: 底部全部按x排序
-        val results = mutableListOf<MatchResult>()
-        for (d in bottomTiles) {
-            if (d.tileId in 0..33) {
-                results.add(MatchResult(d.tileId, d.confidence.toDouble(), false))
-            }
-        }
-
-        // 构建四家河底状态
-        val zeroCounts = IntArray(34)
-        lastFourRiver = FourRiverState(
-            own = DefenseAnalyzer.RiverState(fromCounts(riverPerRegion[0]), riverPerRegion[0].toList()),
-            opposite = DefenseAnalyzer.RiverState(fromCounts(riverPerRegion[1]), riverPerRegion[1].toList()),
-            left = DefenseAnalyzer.RiverState(fromCounts(riverPerRegion[2]), riverPerRegion[2].toList()),
-            right = DefenseAnalyzer.RiverState(fromCounts(riverPerRegion[3]), riverPerRegion[3].toList())
-        )
-
-        val riverBreakdown = riverRegions.mapIndexed { i, r ->
-            String.format("%s:%d", r.name, riverPerRegion[i].size)
-        }.joinToString(" ")
-        FLog.i("TileMatcher",
-            "YOLO: 底部${bottomTiles.size}张 河底${riverPerRegion.sumOf { it.size }}张 | $riverBreakdown")
-        return results
-    }
 
     private fun fromCounts(tileIds: List<Int>): IntArray {
         val counts = IntArray(34)
@@ -1170,26 +1021,87 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
 
     /**
      * 扫描四方牌河, 输出合并 RiverState (用于铳率计算)
-     * 优先用 YOLO 缓存+四方精确坐标分类, 降级用 OpenCV 模板匹配(仅自家)
+     * 对四方牌河区域分别裁剪→模板匹配, 无 YOLO 依赖。
      */
     fun scanAllRivers(screenshot: Bitmap?): FourRiverState {
-        // 优先复用 classify 阶段已构建的四家河底
+        // 有缓存直接返回
         lastFourRiver?.let { return it }
 
-        // 降级: 直接计算
-        val perRegion = Array(riverRegions.size) { mutableListOf<Int>() }
-        for (d in lastYoloDetections) {
-            if (d.tileId !in 0..33) continue
-            for ((idx, region) in riverRegions.withIndex()) {
-                if (region.contains(d)) { perRegion[idx].add(d.tileId); break }
-            }
+        if (screenshot == null || !templatesLoaded || !opencvReady) {
+            val empty = DefenseAnalyzer.RiverState(IntArray(34), emptyList())
+            return FourRiverState(own = empty, opposite = empty, left = empty, right = empty)
         }
-        return FourRiverState(
+
+        val srcMat = Mat()
+        Utils.bitmapToMat(screenshot, srcMat)
+        val gray = Mat()
+        Imgproc.cvtColor(srcMat, gray, Imgproc.COLOR_RGBA2GRAY)
+        srcMat.release()
+
+        val clahe = Imgproc.createCLAHE(3.0, Size(8.0, 8.0))
+        val perRegion = Array(riverRegions.size) { mutableListOf<Int>() }
+
+        for ((idx, region) in riverRegions.withIndex()) {
+            val rx = region.x1.coerceIn(0, gray.cols() - 1)
+            val ry = region.y1.coerceIn(0, gray.rows() - 1)
+            val rw = (region.x2 - region.x1).coerceIn(10, gray.cols() - rx)
+            val rh = (region.y2 - region.y1).coerceIn(10, gray.rows() - ry)
+            if (rw < 20 || rh < 20) continue
+
+            val roiRaw = Mat(gray, Rect(rx, ry, rw, rh))
+            val roi = Mat()
+            clahe.apply(roiRaw, roi)
+            roiRaw.release()
+
+            data class RiverHit(val tileId: Int, val score: Double)
+            val hits = mutableListOf<RiverHit>()
+
+            for ((tileId, template) in templates) {
+                if (tileId == 31) continue  // 白板跳过
+                val tH = template.rows(); val tW = template.cols()
+                val baseScale = minOf(rh.toDouble() / tH, rw.toDouble() / tW) * 0.8
+                val templateEq = Mat()
+                clahe.apply(template, templateEq)
+
+                var bestScore = 0.0
+                for (s in doubleArrayOf(0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2)) {
+                    val scale = baseScale * s
+                    val sw = (tW * scale).toInt()
+                    val sh = (tH * scale).toInt()
+                    if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
+                    val rsz = Mat()
+                    Imgproc.resize(templateEq, rsz, Size(sw.toDouble(), sh.toDouble()))
+                    val res = Mat()
+                    Imgproc.matchTemplate(roi, rsz, res, Imgproc.TM_CCOEFF_NORMED)
+                    val mm = Core.minMaxLoc(res)
+                    if (mm.maxVal > bestScore) bestScore = mm.maxVal
+                    res.release(); rsz.release()
+                }
+                templateEq.release()
+                if (bestScore >= 0.65) hits.add(RiverHit(tileId, bestScore))
+            }
+            roi.release()
+
+            // 去重: 每种牌最多4张
+            val count = IntArray(34)
+            for (h in hits.sortedByDescending { it.score }) {
+                if (count[h.tileId] < 4) {
+                    perRegion[idx].add(h.tileId)
+                    count[h.tileId]++
+                }
+            }
+            FLog.i("TileMatcher", "河底[${region.name}]: ${perRegion[idx].size}张")
+        }
+
+        gray.release()
+
+        lastFourRiver = FourRiverState(
             own = DefenseAnalyzer.RiverState(fromCounts(perRegion[0]), perRegion[0].toList()),
             opposite = DefenseAnalyzer.RiverState(fromCounts(perRegion[1]), perRegion[1].toList()),
             left = DefenseAnalyzer.RiverState(fromCounts(perRegion[2]), perRegion[2].toList()),
             right = DefenseAnalyzer.RiverState(fromCounts(perRegion[3]), perRegion[3].toList())
         )
+        return lastFourRiver!!
     }
 
     /** 合并四家河底为一个 RiverState (兼容旧调用, 用于总览) */
