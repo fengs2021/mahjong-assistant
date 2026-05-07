@@ -68,6 +68,11 @@ class TemplateCollectorActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         FLog.init(filesDir); FLog.i("CollAct", "onCreate")
+        // 提前初始化模板匹配器，避免YOLO回调时竞态（TM init需在UI线程完成）
+        if (!tmInited) {
+            tmInited = TileMatcher.init(this)
+            FLog.i("CollAct", "TM early init=$tmInited")
+        }
         setContentView(createLayout())
     }
 
@@ -202,11 +207,8 @@ class TemplateCollectorActivity : AppCompatActivity() {
                     FLog.e("CollAct", "YOLO load failed", e)
                 }
             }
-            // 初始化模板匹配 (识别用)
-            if (!tmInited) {
-                tmInited = TileMatcher.init(this)
-                FLog.i("CollAct", "TileMatcher init=$tmInited")
-            }
+            // 模板匹配器已在onCreate提前初始化
+            FLog.i("CollAct", "TileMatcher status: tmInited=$tmInited")
 
             // 后台 YOLO 检测
             if (yoloModelLoaded) {
@@ -230,7 +232,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
     /** YOLO检测后分发到各个Tab的处理 */
     private fun doSliceWithYolo() {
         val img = currentBitmap ?: return
-        statusLabel.text = "YOLO: ${yoloDetections.size} tiles — $currentTab"
+        statusLabel.text = "检测: ${yoloDetections.size} 牌 — $currentTab (TM验证)"
         when (currentTab) {
             "hand" -> { sliceHandWithYoloLabels(img) }
             "meld" -> { autoMeldAnnotations(img, yoloDetections) }
@@ -469,9 +471,9 @@ class TemplateCollectorActivity : AppCompatActivity() {
             // 方向切换(坐标Tab隐藏)
             if (currentTab != "coord") {
                 Button(this).apply {
-                    text = ann.direction; textSize = 10f
+                    text = ann.direction; textSize = 9f
                     setBackgroundColor(if (ann.direction == "竖") 0xFF2D3A6D.toInt() else 0xFF3D6A2D.toInt())
-                    setTextColor(0xFFA0C0FF.toInt()); setPadding(dp(6), dp(2), dp(6), dp(2))
+                    setTextColor(0xFFA0C0FF.toInt()); setPadding(dp(3), dp(1), dp(3), dp(1))
                     setOnClickListener { v ->
                         ann.direction = if (ann.direction == "竖") "横" else "竖"
                         (v as Button).text = ann.direction
@@ -482,7 +484,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
             // 调整按钮
             Button(this).apply {
-                text = "调"; textSize = 9f; setBackgroundColor(0xFF2D3A2D.toInt()); setTextColor(0xFF80B080.toInt()); setPadding(dp(4), dp(2), dp(4), dp(2))
+                text = "调"; textSize = 8f; setBackgroundColor(0xFF2D3A2D.toInt()); setTextColor(0xFF80B080.toInt()); setPadding(dp(2), dp(1), dp(2), dp(1))
                 setOnClickListener {
                     meldMarkerView.startAdjust(i)
                     setAnnotationButtons(true)
@@ -492,7 +494,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
 
             // 删除
             Button(this).apply {
-                text = "✕"; textSize = 9f; setBackgroundColor(0xFF3A2D2D.toInt()); setTextColor(0xFFFF8080.toInt()); setPadding(dp(4), dp(2), dp(4), dp(2))
+                text = "✕"; textSize = 8f; setBackgroundColor(0xFF3A2D2D.toInt()); setTextColor(0xFFFF8080.toInt()); setPadding(dp(2), dp(1), dp(2), dp(1))
                 setOnClickListener { meldMarkerView.removeAnnotation(i); refreshAnnotationList(); statusLabel.text = "副露标注: ${meldMarkerView.getAnnotations().size} 张" }
             }.also { row.addView(it) }
 
@@ -624,7 +626,10 @@ class TemplateCollectorActivity : AppCompatActivity() {
         val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "mahjong_templates/$subdir")
         if (!outDir.exists()) outDir.mkdirs()
         var saved = 0; var skipped = 0; var uploaded = 0
-        val client = OkHttpClient()
+        val client = OkHttpClient.Builder()
+            .connectTimeout(2, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(2, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
         for (ann in anns) {
             if (ann.label == "未识别" || ann.label == "未知") { skipped++; continue }
             val crop = meldMarkerView.cropAnnotation(ann)
@@ -647,7 +652,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 FLog.i("CollAct", "upload $candidate → ${resp.code} ${resp.body?.string()}")
                 if (resp.isSuccessful) uploaded++
                 tmpFile.delete()
-            } catch (e: IOException) { FLog.e("CollAct", "upload fail $candidate", e) }
+            } catch (e: Exception) { FLog.e("CollAct", "upload fail $candidate", e) }
         }
         FLog.i("CollAct", "$subdir 保存: $saved/$saved+$skipped 上传: $uploaded")
         AlertDialog.Builder(this).setTitle("完成")
