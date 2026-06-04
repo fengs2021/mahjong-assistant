@@ -437,6 +437,9 @@ object TileMatcher {
         val gray = Mat()
         Imgproc.cvtColor(srcMat, gray, Imgproc.COLOR_RGBA2GRAY)
         srcMat.release()
+        // CLAHE增强对比度 — 桌面版验证TM_CCOEFF_NORMED匹配分从0.6-0.8提升到0.9+
+        val clahe = Imgproc.createCLAHE(2.0, Size(8.0, 8.0))
+        clahe.apply(gray, gray)
 
         // 优先使用标定坐标(模板采集坐标, Python验证0.995+)
         // auto-detect仅作备用: texCenter-71偏差27-47px导致匹配分暴跌至0.1-0.5
@@ -454,21 +457,24 @@ object TileMatcher {
             val faceBottom = detectedFaceY + detectedFaceH
             if (faceRight > gray.cols() || faceBottom > gray.rows()) continue
 
-            val tileMat = Mat(gray, Rect(slot.faceLeft, detectedFaceY, slot.faceW, detectedFaceH))
-            // 亮度检测: 空位(桌面背景 mean~56, 有牌mean~119+)
+            val tileGray = Mat(gray, Rect(slot.faceLeft, detectedFaceY, slot.faceW, detectedFaceH))
+            // 亮度+纹理检测: 空位(桌面背景 mean~56, std~15) vs 有牌(mean~119+, std~30+)
             val meanCheck = MatOfDouble()
-            Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
+            val stdCheck = MatOfDouble()
+            Core.meanStdDev(tileGray, meanCheck, stdCheck)
             val slotMean = meanCheck.get(0, 0)[0]
-            val hasTile = slotMean > 80.0
+            val slotStd = stdCheck.get(0, 0)[0]
+            val hasTile = slotMean > 75.0 && slotStd > 20.0
             meanCheck.release()
+            stdCheck.release()
             slotMeans.add(String.format("%.0f", slotMean))
             if (!hasTile) {
                 emptySlots.add(i)
-                tileMat.release()
+                tileGray.release()
                 continue
             }
-            val (tileId, score) = matchSingleTileMultiDir(tileMat)
-            tileMat.release()
+            val (tileId, score) = matchSingleTileMultiDir(tileGray)
+            tileGray.release()
 
             if (tileId >= 0) {
                 results.add(MatchResult(tileId, score, score < 0.70))
@@ -599,9 +605,10 @@ object TileMatcher {
     }
 
     /**
-     * 方向感知匹配 — 按宽高比自动选方向
+     * 方向感知匹配 — 按宽高比自动选方向 + 多尺度
      *   竖牌(w<h) → 尝试0°(正常竖) + 180°(上下颠倒)
      *   横牌(w>h) → 尝试90°CW + 270°CW(左右翻转)
+     *   每方向3档尺度 (0.97, 1.0, 1.03)
      */
     private fun matchSingleTileMultiDir(tileGray: Mat): Pair<Int, Double> {
         if (isBlankTile(tileGray)) return Pair(31, 1.0)
@@ -617,6 +624,8 @@ object TileMatcher {
             intArrayOf(-1, Core.ROTATE_180)  // -1 = 不旋转(0°)
         }
 
+        val scales = doubleArrayOf(0.97, 1.0, 1.03)
+
         var bestId = -1
         var bestScore = 0.0
 
@@ -630,17 +639,23 @@ object TileMatcher {
                     r
                 }
 
-                val resized = Mat()
-                Imgproc.resize(src, resized, Size(cropW.toDouble(), cropH.toDouble()))
-                val result = Mat()
-                Imgproc.matchTemplate(tileGray, resized, result, Imgproc.TM_CCOEFF_NORMED)
-                val score = result.get(0, 0)[0]
-                result.release(); resized.release()
-                if (rot != -1) src.release()
+                for (scale in scales) {
+                    val sw = (cropW * scale).toInt()
+                    val sh = (cropH * scale).toInt()
+                    if (sw < 8 || sh < 8) continue
 
-                if (score > bestScore) {
-                    bestScore = score; bestId = tileId
+                    val resized = Mat()
+                    Imgproc.resize(src, resized, Size(sw.toDouble(), sh.toDouble()))
+                    val result = Mat()
+                    Imgproc.matchTemplate(tileGray, resized, result, Imgproc.TM_CCOEFF_NORMED)
+                    val score = result.get(0, 0)[0]
+                    result.release(); resized.release()
+
+                    if (score > bestScore) {
+                        bestScore = score; bestId = tileId
+                    }
                 }
+                if (rot != -1) src.release()
             }
         }
 

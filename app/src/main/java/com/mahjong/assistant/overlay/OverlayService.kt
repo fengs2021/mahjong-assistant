@@ -396,7 +396,12 @@ class OverlayService : Service() {
 
         currentHand = hand
         val result = Shanten.calculate(hand)
-        val advice = Efficiency.analyze(hand)
+
+        // 巡目估算: 自家河底张数+1 (每人~18巡)
+        val turn = (riverState?.opponentDiscards?.size ?: 0) + 1
+
+        // 多因子评分 (v7.0) — 传入河底可见牌使进张计算更准
+        val advice = Efficiency.analyzeWithScoring(hand, visible = riverState?.visibleCounts ?: IntArray(0), turn = turn)
         val safety = DefenseAnalyzer.analyze(hand, riverState)
 
         // 向听数
