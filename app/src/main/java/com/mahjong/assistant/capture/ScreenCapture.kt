@@ -515,9 +515,10 @@ object TileMatcher {
                 val sx = (drawnSlotDynamic.faceLeft + dx).coerceIn(0, gray.cols() - drawnSlotDynamic.faceW)
                 val tileMat = Mat(gray, Rect(sx, detectedFaceY, drawnSlotDynamic.faceW, detectedFaceH))
                 val meanCheck = MatOfDouble()
-                Core.meanStdDev(tileMat, meanCheck, MatOfDouble())
-                val hasTile = meanCheck.get(0, 0)[0] > 80.0
-                meanCheck.release()
+                val stdCheck = MatOfDouble()
+                Core.meanStdDev(tileMat, meanCheck, stdCheck)
+                val hasTile = meanCheck.get(0, 0)[0] > 75.0 && stdCheck.get(0, 0)[0] > 20.0
+                meanCheck.release(); stdCheck.release()
                 if (hasTile) {
                     val (tid, score) = matchSingleTileMultiDir(tileMat)
                     if (tid >= 0 && score > bestDrawnScore) {
@@ -709,7 +710,8 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
         val variance = stddev.get(0, 0)[0].let { it * it }
         mean.release(); stddev.release()
         // 白板: 低方差(纯色面) AND 高亮度(米白~200+, 不是深蓝桌面~30)
-        return variance < 100.0 && avg > 150.0
+        // 阈值放宽: CLAHE增强后方差会被放大2-4倍, 原100→400
+        return variance < 400.0 && avg > 150.0
     }
 
     // ═══════════════════════════════════════════
