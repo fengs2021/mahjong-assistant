@@ -102,11 +102,12 @@ object Efficiency {
             val (ukeire, ukeireTiles) = calcUkeire(afterHand, visible, afterS)
 
             // ─── 多因子评分 ───
-            val wq = waitQuality(afterHand)
-            val cs = chiitoiScore(afterHand)
-            val ts = tanyaoScore(afterHand)
-            val fs = flushScore(afterHand)
-            val ds = doraScore(afterHand, doraIndicators)
+            val counts = toCounts34(afterHand)
+            val wq = waitQuality(counts)
+            val cs = chiitoiScore(counts)
+            val ts = tanyaoScore(counts)
+            val fs = flushScore(counts)
+            val ds = doraScore(counts, doraIndicators)
             val ukeireWeighted = ukeire.toDouble() * speedWeight
 
             // 综合评分: 越低越好 (Python式tuple比较)
@@ -144,6 +145,13 @@ object Efficiency {
     // ═══════════════════════════════════════════
     // 多因子评分函数 (移植自 RiichiAI)
     // ═══════════════════════════════════════════
+
+    /** 把牌ID数组转为34元素计数数组 */
+    private fun toCounts34(hand: IntArray): IntArray {
+        val counts = IntArray(34)
+        for (t in hand) if (t in 0..33) counts[t]++
+        return counts
+    }
 
     /**
      * 听牌质量: 两面+3, 边张-1
