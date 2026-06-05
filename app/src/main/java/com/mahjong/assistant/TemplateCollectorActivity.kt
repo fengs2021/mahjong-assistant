@@ -602,19 +602,32 @@ class TemplateCollectorActivity : AppCompatActivity() {
         if (slices.isEmpty()) { Toast.makeText(this, "请先加载截图", Toast.LENGTH_SHORT).show(); return }
         val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "mahjong_templates/hand_templates")
         if (!outDir.exists()) outDir.mkdirs()
-        var saved = 0; var skipped = 0
+        // 同时也保存到内部存储供 TileMatcher 加载 (无需权限)
+        val internalDir = File(filesDir, "user_tiles")
+        if (!internalDir.exists()) internalDir.mkdirs()
+        var saved = 0; var skipped = 0; var internalSaved = 0
         for (s in slices) {
             if (s.label == "未识别" || s.label.isEmpty()) { skipped++; continue }
+            // 保存到 Download (用户备份)
             var candidate = "${s.label}.png"; var counter = 2
             while (File(outDir, candidate).exists()) { candidate = "${s.label}${counter}.png"; counter++ }
             try {
                 FileOutputStream(File(outDir, candidate)).use { s.bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 saved++
             } catch (_: Exception) { skipped++; continue }
+            // 同时保存到内部存储 (供 TileMatcher 多模板池加载)
+            var intCandidate = "${s.label}.png"; var intCounter = 2
+            while (File(internalDir, intCandidate).exists()) { intCandidate = "${s.label}${intCounter}.png"; intCounter++ }
+            try {
+                FileOutputStream(File(internalDir, intCandidate)).use { s.bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                internalSaved++
+            } catch (_: Exception) { /* skip */ }
         }
-        FLog.i("CollAct", "hand_templates 保存: $saved/$saved+$skipped")
+        // 通知 TileMatcher 重载模板 (立即生效)
+        val loaded = TileMatcher.reloadTemplates(this)
+        FLog.i("CollAct", "hand_templates 保存: $saved/$saved+$skipped 内部存储: $internalSaved 重载: $loaded")
         AlertDialog.Builder(this).setTitle("完成")
-            .setMessage("手牌保存: $saved 张\n跳过: $skipped 张\n→ ${outDir.absolutePath}")
+            .setMessage("手牌保存: $saved 张\n内部存储: $internalSaved 张\n跳过: $skipped 张\n匹配器已重载: ${if(loaded)\"是\" else \"未加载\"}\n→ ${outDir.absolutePath}")
             .setPositiveButton("确定", null).show()
         statusLabel.text = "手牌保存 $saved 张"
     }

@@ -74,8 +74,8 @@ object TileMatcher {
         faceH = 143
     )
 
-    // 模板缓存
-    private val templates = mutableMapOf<Int, Mat>()
+    // 模板缓存 — 每牌多个模板 (List), 匹配时取最高分
+    private val templates = mutableMapOf<Int, MutableList<Mat>>()
     // 副露专用模板 (从截图中采集, 宽高比~1:1 vs 手牌98:143)
     // Pair(竖放模板, 横放模板) — 横放可为null
     private val meldTemplates = mutableMapOf<Int, Pair<Mat?, Mat?>>()
@@ -131,9 +131,10 @@ object TileMatcher {
                 templatesLoaded = loadCalibratedTemplates(context)
             }
             val meldCount = loadMeldTemplates(context)
+            loadUserCollectedTemplates(context)
 
             initDiagnostic = if (templatesLoaded) {
-                "就绪: ${templates.size}/34模板 + ${meldCount}副露"
+                "就绪: ${totalTemplateCount()}模板(${templates.size}种) + ${meldCount}副露"
             } else {
                 "就绪: 仅模板匹配"
             }
@@ -147,9 +148,11 @@ object TileMatcher {
         }
     }
 
-    fun getDiagnostic(): String = "$initDiagnostic | 模板数=${templates.size} | OpenCV=$opencvReady"
+    private fun totalTemplateCount(): Int = templates.values.sumOf { it.size }
+
+    fun getDiagnostic(): String = "$initDiagnostic | 模板组=${templates.size} 模板图片=${totalTemplateCount()} | OpenCV=$opencvReady"
     fun hasTemplates(): Boolean = templatesLoaded
-    fun templateCount(): Int = templates.size
+    fun templateCount(): Int = totalTemplateCount()
     fun isOpencvReady(): Boolean = opencvReady
 
     /** 公开接口: 识别单张牌面Bitmap → (tileId, confidence) 或 null */
@@ -188,7 +191,7 @@ object TileMatcher {
                         val mat = Mat()
                         Utils.bitmapToMat(bitmap, mat)
                         Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
-                        templates[tileId] = mat
+                        templates[tileId] = mutableListOf(mat)
                         bitmap.recycle()
                         loaded++
                     }
@@ -218,8 +221,7 @@ object TileMatcher {
                     val mat = Mat()
                     Utils.bitmapToMat(bitmap, mat)
                     Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
-                    templates[tileId]?.release()
-                    templates[tileId] = mat
+                    templates.getOrPut(tileId) { mutableListOf() }.add(mat)
                     bitmap.recycle()
                     loaded++
                 }
@@ -229,6 +231,52 @@ object TileMatcher {
         }
         android.util.Log.i(TAG, "从内部存储加载 $loaded 校准模板")
         return templates.isNotEmpty()
+    }
+
+    // ─── 用户采集模板加载 (TemplateCollectorActivity 存到 internal/user_tiles/) ───
+    private fun loadUserCollectedTemplates(context: Context) {
+        val dir = File(context.filesDir, "user_tiles")
+        if (!dir.exists() || !dir.isDirectory) return
+        val files = dir.listFiles { f -> f.name.endsWith(".png") } ?: return
+        if (files.isEmpty()) return
+        var loaded = 0
+        for (file in files) {
+            try {
+                val name = file.name.removeSuffix(".png")
+                // 去掉尾部计数器数字: "一万2"→"一万", "三万11"→"三万"
+                val baseName = name.trimEnd { it in '0'..'9' }
+                val tileId = nameToId[baseName] ?: continue
+                val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: continue
+                val mat = Mat()
+                Utils.bitmapToMat(bitmap, mat)
+                Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
+                templates.getOrPut(tileId) { mutableListOf() }.add(mat)
+                bitmap.recycle()
+                loaded++
+            } catch (_: Exception) { /* skip corrupt file */ }
+        }
+        android.util.Log.i(TAG, "从用户采集加载 $loaded 模板 (dir=$dir)")
+    }
+
+    // ─── 运行时重载模板 (供 TemplateCollectorActivity 保存后调用) ───
+    fun reloadTemplates(context: Context): Boolean {
+        // 重新加载预设+校准+用户采集
+        templates.forEach { (_, mats) -> mats.forEach { it.release() } }
+        templates.clear()
+        templatesLoaded = loadPresetTemplates(context)
+        if (!templatesLoaded) {
+            templatesLoaded = loadCalibratedTemplates(context)
+        }
+        loadMeldTemplates(context)
+        loadUserCollectedTemplates(context)
+        initDiagnostic = if (templatesLoaded) {
+            "就绪: ${totalTemplateCount()}模板(${templates.size}种) | 已重载"
+        } else {
+            "就绪: 仅模板匹配"
+        }
+        FLog.i("TileMatcher", "reloadTemplates: $initDiagnostic")
+        android.util.Log.i(TAG, initDiagnostic)
+        return templatesLoaded
     }
 
     // ─── 副露模板加载 (从截图中采集, 宽高比~1:1) ───
@@ -295,12 +343,12 @@ object TileMatcher {
         }
         tile.recycle()
 
-        templates[tileId]?.release()
         val mat = Mat()
         val reloaded = BitmapFactory.decodeFile(file.absolutePath)
         Utils.bitmapToMat(reloaded, mat)
         Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY)
-        templates[tileId] = mat
+        // 校准模板也加入列表 (保留预设模板作为选项)
+        templates.getOrPut(tileId) { mutableListOf() }.add(mat)
         reloaded.recycle()
         templatesLoaded = true
         return true
@@ -582,18 +630,19 @@ object TileMatcher {
         var bestId = -1
         var bestScore = 0.0
 
-        for ((tileId, template) in templates) {
+        for ((tileId, templateList) in templates) {
             if (tileId == 31) continue  // 白跳过模板匹配
+            for (template in templateList) {
+                val resized = Mat()
+                Imgproc.resize(template, resized, Size(tileGray.cols().toDouble(), tileGray.rows().toDouble()))
+                val result = Mat()
+                Imgproc.matchTemplate(tileGray, resized, result, Imgproc.TM_CCOEFF_NORMED)
+                val score = result.get(0, 0)[0]
+                result.release(); resized.release()
 
-            val resized = Mat()
-            Imgproc.resize(template, resized, Size(tileGray.cols().toDouble(), tileGray.rows().toDouble()))
-            val result = Mat()
-            Imgproc.matchTemplate(tileGray, resized, result, Imgproc.TM_CCOEFF_NORMED)
-            val score = result.get(0, 0)[0]
-            result.release(); resized.release()
-
-            if (score > bestScore) {
-                bestScore = score; bestId = tileId
+                if (score > bestScore) {
+                    bestScore = score; bestId = tileId
+                }
             }
         }
 
@@ -630,33 +679,34 @@ object TileMatcher {
         var bestId = -1
         var bestScore = 0.0
 
-        for ((tileId, template) in templates) {
+        for ((tileId, templateList) in templates) {
             if (tileId == 31) continue
-
-            for (rot in rotations) {
-                val src = if (rot == -1) template else {
-                    val r = Mat()
-                    Core.rotate(template, r, rot)
-                    r
-                }
-
-                for (scale in scales) {
-                    val sw = (cropW * scale).toInt()
-                    val sh = (cropH * scale).toInt()
-                    if (sw < 8 || sh < 8) continue
-
-                    val resized = Mat()
-                    Imgproc.resize(src, resized, Size(sw.toDouble(), sh.toDouble()))
-                    val result = Mat()
-                    Imgproc.matchTemplate(tileGray, resized, result, Imgproc.TM_CCOEFF_NORMED)
-                    val score = result.get(0, 0)[0]
-                    result.release(); resized.release()
-
-                    if (score > bestScore) {
-                        bestScore = score; bestId = tileId
+            for (template in templateList) {
+                for (rot in rotations) {
+                    val src = if (rot == -1) template else {
+                        val r = Mat()
+                        Core.rotate(template, r, rot)
+                        r
                     }
+
+                    for (scale in scales) {
+                        val sw = (cropW * scale).toInt()
+                        val sh = (cropH * scale).toInt()
+                        if (sw < 8 || sh < 8) continue
+
+                        val resized = Mat()
+                        Imgproc.resize(src, resized, Size(sw.toDouble(), sh.toDouble()))
+                        val result = Mat()
+                        Imgproc.matchTemplate(tileGray, resized, result, Imgproc.TM_CCOEFF_NORMED)
+                        val score = result.get(0, 0)[0]
+                        result.release(); resized.release()
+
+                        if (score > bestScore) {
+                            bestScore = score; bestId = tileId
+                        }
+                    }
+                    if (rot != -1) src.release()
                 }
-                if (rot != -1) src.release()
             }
         }
 
@@ -763,37 +813,40 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
             val hits = mutableListOf<Hit>()
             val allBestScores = mutableMapOf<Int, Double>()
 
-            for ((tileId, template) in templates) {
+            for ((tileId, templateList) in templates) {
                 if (tileId == 31) continue
-                val th = getThreshold(tileId)
-                val tH = template.rows().toDouble()
-                val tW = template.cols().toDouble()
-                // 同步降采样模板: targetScale基于降采样后的尺寸
-                val targetScale = minOf(scanH.toDouble(), 200.0) / tH
-                val perTemplateScales = DoubleArray(13) { i -> targetScale * (0.70 + i * 0.05) }
+                for (template in templateList) {
+                    val th = getThreshold(tileId)
+                    val tH = template.rows().toDouble()
+                    val tW = template.cols().toDouble()
+                    // 同步降采样模板: targetScale基于降采样后的尺寸
+                    val targetScale = minOf(scanH.toDouble(), 200.0) / tH
+                    val perTemplateScales = DoubleArray(13) { i -> targetScale * (0.70 + i * 0.05) }
 
-                var bestScore = 0.0
-                var bestX = 0
-                val templateEq = Mat()
-                clahe.apply(template, templateEq)
+                    var bestScore = 0.0
+                    var bestX = 0
+                    val templateEq = Mat()
+                    clahe.apply(template, templateEq)
 
-                for (scale in perTemplateScales) {
-                    val sw = (tW * scale).toInt()
-                    val sh = (tH * scale).toInt()
-                    if (sw < 8 || sh < 8 || sw > roi.cols() || sh > roi.rows()) continue
-                    val resized = Mat()
-                    Imgproc.resize(templateEq, resized, Size(sw.toDouble(), sh.toDouble()))
-                    val result = Mat()
-                    Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
-                    val mm = Core.minMaxLoc(result)
-                    if (mm.maxVal > bestScore) {
-                        bestScore = mm.maxVal; bestX = mm.maxLoc.x.toInt()
+                    for (scale in perTemplateScales) {
+                        val sw = (tW * scale).toInt()
+                        val sh = (tH * scale).toInt()
+                        if (sw < 8 || sh < 8 || sw > roi.cols() || sh > roi.rows()) continue
+                        val resized = Mat()
+                        Imgproc.resize(templateEq, resized, Size(sw.toDouble(), sh.toDouble()))
+                        val result = Mat()
+                        Imgproc.matchTemplate(roi, resized, result, Imgproc.TM_CCOEFF_NORMED)
+                        val mm = Core.minMaxLoc(result)
+                        if (mm.maxVal > bestScore) {
+                            bestScore = mm.maxVal; bestX = mm.maxLoc.x.toInt()
+                        }
+                        result.release(); resized.release()
                     }
-                    result.release(); resized.release()
+                    templateEq.release()
+                    val curBest = allBestScores[tileId] ?: 0.0
+                    if (bestScore > curBest) allBestScores[tileId] = bestScore
+                    if (bestScore >= th) hits.add(Hit(tileId, bestX, bestScore))
                 }
-                templateEq.release()
-                allBestScores[tileId] = bestScore
-                if (bestScore >= th) hits.add(Hit(tileId, bestX, bestScore))
             }
             roi.release()
 
@@ -1073,29 +1126,31 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
             data class RiverHit(val tileId: Int, val score: Double)
             val hits = mutableListOf<RiverHit>()
 
-            for ((tileId, template) in templates) {
+            for ((tileId, templateList) in templates) {
                 if (tileId == 31) continue  // 白板跳过
-                val tH = template.rows(); val tW = template.cols()
-                val baseScale = minOf(rh.toDouble() / tH, rw.toDouble() / tW) * 0.8
-                val templateEq = Mat()
-                clahe.apply(template, templateEq)
+                for (template in templateList) {
+                    val tH = template.rows(); val tW = template.cols()
+                    val baseScale = minOf(rh.toDouble() / tH, rw.toDouble() / tW) * 0.8
+                    val templateEq = Mat()
+                    clahe.apply(template, templateEq)
 
-                var bestScore = 0.0
-                for (s in doubleArrayOf(0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2)) {
-                    val scale = baseScale * s
-                    val sw = (tW * scale).toInt()
-                    val sh = (tH * scale).toInt()
-                    if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
-                    val rsz = Mat()
-                    Imgproc.resize(templateEq, rsz, Size(sw.toDouble(), sh.toDouble()))
-                    val res = Mat()
-                    Imgproc.matchTemplate(roi, rsz, res, Imgproc.TM_CCOEFF_NORMED)
-                    val mm = Core.minMaxLoc(res)
-                    if (mm.maxVal > bestScore) bestScore = mm.maxVal
-                    res.release(); rsz.release()
+                    var bestScore = 0.0
+                    for (s in doubleArrayOf(0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2)) {
+                        val scale = baseScale * s
+                        val sw = (tW * scale).toInt()
+                        val sh = (tH * scale).toInt()
+                        if (sw < 6 || sh < 6 || sw > roi.cols() || sh > roi.rows()) continue
+                        val rsz = Mat()
+                        Imgproc.resize(templateEq, rsz, Size(sw.toDouble(), sh.toDouble()))
+                        val res = Mat()
+                        Imgproc.matchTemplate(roi, rsz, res, Imgproc.TM_CCOEFF_NORMED)
+                        val mm = Core.minMaxLoc(res)
+                        if (mm.maxVal > bestScore) bestScore = mm.maxVal
+                        res.release(); rsz.release()
+                    }
+                    templateEq.release()
+                    if (bestScore >= 0.65) hits.add(RiverHit(tileId, bestScore))
                 }
-                templateEq.release()
-                if (bestScore >= 0.65) hits.add(RiverHit(tileId, bestScore))
             }
             roi.release()
 
@@ -1142,7 +1197,7 @@ FLog.i("TileMatcher", "detectHandY: texCenter=$bestY (std=${String.format("%.1f"
 
     // ─── 清理 ───
     fun release() {
-        for ((_, mat) in templates) mat.release()
+        for ((_, mats) in templates) mats.forEach { it.release() }
         templates.clear()
         templatesLoaded = false
     }
