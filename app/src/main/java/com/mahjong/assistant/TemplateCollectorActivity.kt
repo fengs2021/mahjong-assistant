@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.PointF
+import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.os.Environment
@@ -62,7 +63,7 @@ class TemplateCollectorActivity : AppCompatActivity() {
     private lateinit var annScroll: ScrollView
     private var isMeldAnnotationMode = false
 
-    data class TileSlice(val id: String, val bmp: Bitmap, var label: String)
+    data class TileSlice(val id: String, val bmp: Bitmap, var label: String, val bounds: Rect? = null)
     private val slices = mutableListOf<TileSlice>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -272,7 +273,8 @@ class TemplateCollectorActivity : AppCompatActivity() {
             }
             val dir = if (w > h) "横" else "竖"
             val label = autoName ?: "未识别"
-            slices.add(TileSlice("${label}_${dir}", tileBmp, label))
+            val bounds = Rect(d.x1, d.y1, d.x2, d.y2)
+            slices.add(TileSlice("${label}_${dir}", tileBmp, label, bounds))
         }
 
         FLog.i("CollAct", "底部全部: ${bottomTiles.size}张 (手牌+副露)")
@@ -587,6 +589,57 @@ class TemplateCollectorActivity : AppCompatActivity() {
         return tileNames.getOrNull(idx)
     }
 
+    // ═══════ YOLO 训练数据保存 ═══════
+
+    /** tileNames 的下标即 0-33 类ID，直接用 */
+    private fun tileNameToClassId(label: String): Int = tileNames.indexOf(label)
+
+    private fun yoloLine(classId: Int, imgW: Int, imgH: Int, x1: Int, y1: Int, x2: Int, y2: Int): String {
+        val cx = ((x1 + x2) / 2.0) / imgW
+        val cy = ((y1 + y2) / 2.0) / imgH
+        val w = (x2 - x1).toDouble() / imgW
+        val h_ = (y2 - y1).toDouble() / imgH
+        return "$classId ${"%.6f".format(cx)} ${"%.6f".format(cy)} ${"%.6f".format(w)} ${"%.6f".format(h_)}"
+    }
+
+    /**
+     * 保存 YOLO 标注数据: 全屏截图 + 每个标注框的 .txt
+     * @param labelLines 每行 "classId cx cy w h" (YOLO format)
+     */
+    private fun saveYoloAnnotations(labelLines: List<String>) {
+        val img = currentBitmap ?: return
+        if (labelLines.isEmpty()) return
+        val yoloDir = File(filesDir, "yolo_training")
+        val imgDir = File(yoloDir, "images"); val labelDir = File(yoloDir, "labels")
+        imgDir.mkdirs(); labelDir.mkdirs()
+
+        val ts = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+        // 防毫秒级重复: 用循环找未占用的名字
+        var seq = 0; var name: String
+        do { name = "coll_${ts}_${"%03d".format(seq)}"; seq++ } while (File(labelDir, "${name}.txt").exists())
+
+        // 保存全屏截图
+        val imgFile = File(imgDir, "${name}.png")
+        try {
+            FileOutputStream(imgFile).use { img.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        } catch (e: Exception) {
+            FLog.e("CollAct", "YOLO saveImage fail", e)
+            return
+        }
+
+        // 保存 label
+        val labelFile = File(labelDir, "${name}.txt")
+        labelFile.writeText(labelLines.joinToString("\n") + "\n")
+
+        // 首次写 class names
+        val namesFile = File(yoloDir, "tiles.names")
+        if (!namesFile.exists()) {
+            namesFile.writeText(tileNames.joinToString("\n"))
+        }
+
+        FLog.i("CollAct", "YOLO saved: ${labelLines.size} boxes → ${imgFile.name}")
+    }
+
     // ═══════ 保存 ═══════
     private fun saveAll() {
         FLog.i("CollAct", "saveAll tab=$currentTab")
@@ -606,6 +659,9 @@ class TemplateCollectorActivity : AppCompatActivity() {
         val internalDir = File(filesDir, "user_tiles")
         if (!internalDir.exists()) internalDir.mkdirs()
         var saved = 0; var skipped = 0; var internalSaved = 0
+        // YOLO 标注收集
+        val yoloLines = mutableListOf<String>()
+        val imgW = currentBitmap?.width ?: 0; val imgH = currentBitmap?.height ?: 0
         for (s in slices) {
             if (s.label == "未识别" || s.label.isEmpty()) { skipped++; continue }
             // 保存到 Download (用户备份)
@@ -622,15 +678,28 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 FileOutputStream(File(internalDir, intCandidate)).use { s.bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 internalSaved++
             } catch (_: Exception) { /* skip */ }
+
+            // YOLO 标注: bounds 来自 YOLO Detection
+            val b = s.bounds
+            if (b != null && imgW > 0 && imgH > 0) {
+                val cid = tileNameToClassId(s.label)
+                if (cid >= 0) {
+                    yoloLines.add(yoloLine(cid, imgW, imgH, b.left, b.top, b.right, b.bottom))
+                }
+            }
+        }
+        // 保存 YOLO 训练数据
+        if (yoloLines.isNotEmpty()) {
+            saveYoloAnnotations(yoloLines)
         }
         // 通知 TileMatcher 重载模板 (立即生效)
         val loaded = TileMatcher.reloadTemplates(this)
         val reloadStatus = if (loaded) "是" else "未加载"
         FLog.i("CollAct", "hand_templates 保存: $saved/$saved+$skipped 内部存储: $internalSaved 重载: $loaded")
         AlertDialog.Builder(this).setTitle("完成")
-            .setMessage("手牌保存: $saved 张\n内部存储: $internalSaved 张\n跳过: $skipped 张\n匹配器已重载: $reloadStatus\n→ ${outDir.absolutePath}")
+            .setMessage("手牌保存: $saved 张\n内部存储: $internalSaved 张\n跳过: $skipped 张\n匹配器已重载: $reloadStatus\nYOLO标注: ${yoloLines.size} 框\n→ ${outDir.absolutePath}")
             .setPositiveButton("确定", null).show()
-        statusLabel.text = "手牌保存 $saved 张"
+        statusLabel.text = "手牌保存 $saved 张 | YOLO ${yoloLines.size} 框"
     }
 
     private fun saveAnnotationsTo(subdir: String) {
@@ -640,6 +709,9 @@ class TemplateCollectorActivity : AppCompatActivity() {
         val outDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "mahjong_templates/$subdir")
         if (!outDir.exists()) outDir.mkdirs()
         var saved = 0; var skipped = 0; var uploaded = 0
+        // YOLO 标注收集
+        val yoloLines = mutableListOf<String>()
+        val imgW = currentBitmap?.width ?: 0; val imgH = currentBitmap?.height ?: 0
         val client = OkHttpClient.Builder()
             .connectTimeout(2, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(2, java.util.concurrent.TimeUnit.SECONDS)
@@ -667,12 +739,27 @@ class TemplateCollectorActivity : AppCompatActivity() {
                 if (resp.isSuccessful) uploaded++
                 tmpFile.delete()
             } catch (e: Exception) { FLog.e("CollAct", "upload fail $candidate", e) }
+
+            // YOLO 标注: bounds 来自 Annotation 的 4 个角点
+            val b = ann.bounds
+            if (b.width() > 0 && b.height() > 0 && imgW > 0 && imgH > 0) {
+                // label 可能带 (TM) / (区域名) 后缀, 取牌名部分
+                val cleanLabel = ann.label.substringBefore("(").trim()
+                val cid = tileNameToClassId(cleanLabel)
+                if (cid >= 0) {
+                    yoloLines.add(yoloLine(cid, imgW, imgH, b.left, b.top, b.right, b.bottom))
+                }
+            }
         }
-        FLog.i("CollAct", "$subdir 保存: $saved/$saved+$skipped 上传: $uploaded")
+        // 保存 YOLO 训练数据
+        if (yoloLines.isNotEmpty()) {
+            saveYoloAnnotations(yoloLines)
+        }
+        FLog.i("CollAct", "$subdir 保存: $saved/$saved+$skipped 上传: $uploaded YOLO: ${yoloLines.size}")
         AlertDialog.Builder(this).setTitle("完成")
-            .setMessage("本地保存: $saved 张\n上传服务器: $uploaded 张\n跳过: $skipped 张\n→ ${outDir.absolutePath}")
+            .setMessage("本地保存: $saved 张\n上传服务器: $uploaded 张\n跳过: $skipped 张\nYOLO标注: ${yoloLines.size} 框\n→ ${outDir.absolutePath}")
             .setPositiveButton("确定", null).show()
-        statusLabel.text = "保存 $saved | 上传 $uploaded"
+        statusLabel.text = "保存 $saved | 上传 $uploaded | YOLO ${yoloLines.size}"
     }
 
     private fun saveZoneCoords() {
