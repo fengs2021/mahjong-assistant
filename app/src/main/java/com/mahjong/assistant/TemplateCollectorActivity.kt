@@ -625,9 +625,10 @@ class TemplateCollectorActivity : AppCompatActivity() {
         }
         // 通知 TileMatcher 重载模板 (立即生效)
         val loaded = TileMatcher.reloadTemplates(this)
+        val reloadStatus = if (loaded) "是" else "未加载"
         FLog.i("CollAct", "hand_templates 保存: $saved/$saved+$skipped 内部存储: $internalSaved 重载: $loaded")
         AlertDialog.Builder(this).setTitle("完成")
-            .setMessage("手牌保存: $saved 张\n内部存储: $internalSaved 张\n跳过: $skipped 张\n匹配器已重载: ${if(loaded)\"是\" else \"未加载\"}\n→ ${outDir.absolutePath}")
+            .setMessage("手牌保存: $saved 张\n内部存储: $internalSaved 张\n跳过: $skipped 张\n匹配器已重载: $reloadStatus\n→ ${outDir.absolutePath}")
             .setPositiveButton("确定", null).show()
         statusLabel.text = "手牌保存 $saved 张"
     }
